@@ -257,8 +257,9 @@ describe("BackgroundManager persisted session activity stale checks", () => {
     })
     await pollingManager.pollRunningTasks()
 
-    //#then - the wrong-session part does not refresh activity or prevent stale cancellation
-    expect(task.status).toBe("cancelled")
+    //#then - the wrong-session part does not refresh activity or prevent visible stale failure
+    expect(task.status).toBe("error")
+    expect(task.error).toContain("Active background session stale watchdog")
     expect(task.progress?.lastUpdate.getTime()).toBe(staleTime)
     expect(abortCallCount).toBe(1)
 

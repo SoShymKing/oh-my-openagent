@@ -406,6 +406,81 @@ describe("BackgroundManager pollRunningTasks", () => {
       expect(task.status).toBe("running")
     })
 
+    test("#when active status has stale progress and fallback exists #then retries using fallback chain instead of hanging", async () => {
+      //#given
+      const manager = createManagerWithClient({
+        status: async () => ({ data: { "ses-busy-fallback": { type: "busy" } } }),
+      })
+      manager["processKey"] = mock(() => {})
+      const task = createRunningTask("ses-busy-fallback")
+      task.startedAt = new Date(Date.now() - 70 * 60 * 1000)
+      task.progress = {
+        toolCalls: 2,
+        lastUpdate: new Date(Date.now() - 55 * 60 * 1000),
+      }
+      task.model = { providerID: "anthropic", modelID: "claude-opus-4-7" }
+      task.fallbackChain = [{ model: "claude-sonnet-4-0", providers: ["anthropic"] }]
+      injectTask(manager, task)
+
+      //#when
+      const poll = manager["pollRunningTasks"]
+      await poll.call(manager)
+      await manager.shutdown()
+
+      //#then
+      expect(task.status).toBe("pending")
+      expect(task.attemptCount).toBe(1)
+      expect(task.currentAttemptID).toBeDefined()
+      expect(task.error).toBeUndefined()
+    })
+
+    test("#when active status has stale no-progress and retry unavailable #then task ends in visible error", async () => {
+      //#given
+      const manager = createManagerWithClient({
+        status: async () => ({ data: { "ses-running-no-progress": { type: "running" } } }),
+      })
+      const task = createRunningTask("ses-running-no-progress")
+      task.startedAt = new Date(Date.now() - 80 * 60 * 1000)
+      task.progress = undefined
+      injectTask(manager, task)
+
+      //#when
+      const poll = manager["pollRunningTasks"]
+      await poll.call(manager)
+
+      //#then
+      expect(task.status).toBe("error")
+      expect(task.error).toContain("Active background session stale watchdog")
+      expect(task.completedAt).toBeDefined()
+      expect(manager.getPendingNotifications(task.parentSessionId)).toContain(task)
+
+      await manager.shutdown()
+    })
+
+    test("#when active stale task belongs to team run #then stale watchdog leaves it running", async () => {
+      //#given
+      const manager = createManagerWithClient({
+        status: async () => ({ data: { "ses-busy-team": { type: "busy" } } }),
+      })
+      const task = createRunningTask("ses-busy-team")
+      task.teamRunId = "team-run-1"
+      task.startedAt = new Date(Date.now() - 80 * 60 * 1000)
+      task.progress = {
+        toolCalls: 3,
+        lastUpdate: new Date(Date.now() - 70 * 60 * 1000),
+      }
+      injectTask(manager, task)
+
+      //#when
+      const poll = manager["pollRunningTasks"]
+      await poll.call(manager)
+      await manager.shutdown()
+
+      //#then
+      expect(task.status).toBe("running")
+      expect(task.error).toBeUndefined()
+    })
+
     test("#when progress is older than prune TTL #then active status still keeps the task running", async () => {
       //#given
       const manager = createManagerWithClient({
