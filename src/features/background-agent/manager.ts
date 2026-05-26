@@ -54,6 +54,9 @@ import {
 } from "./compaction-aware-message-resolver"
 import { ConcurrencyManager } from "./concurrency"
 import {
+  DEFAULT_MESSAGE_STALENESS_TIMEOUT_MS,
+  DEFAULT_STALE_TIMEOUT_MS,
+  MIN_RUNTIME_BEFORE_STALE_MS,
   POLLING_INTERVAL_MS,
   type QueueItem,
   TASK_CLEANUP_DELAY_MS,
@@ -82,6 +85,7 @@ import {
   MIN_SESSION_GONE_POLLS,
   verifySessionExists as verifySessionStillExists,
 } from "./session-existence"
+import { getSessionActivityFromClient } from "./session-activity"
 import { handleSessionIdleBackgroundEvent } from "./session-idle-event-handler"
 import {
   hasOutputSignalFromPart,
@@ -99,6 +103,7 @@ import {
   type SubagentSpawnContext,
 } from "./subagent-spawn-limits"
 import { TaskHistory } from "./task-history"
+import { refreshTaskActivityFromSession } from "./task-activity-refresh"
 import { checkAndInterruptStaleTasks, pruneStaleTasksAndNotifications, type SessionStatusMap } from "./task-poller"
 import {
   archiveBackgroundTask,
@@ -2647,7 +2652,97 @@ The task was re-queued on a fallback model after a retryable failure.
       concurrencyManager: this.concurrencyManager,
       notifyParentSession: (task) => this.enqueueNotificationForParent(task.parentSessionId, () => this.notifyParentSession(task)),
       sessionStatuses: allStatuses,
+      shouldInterruptTask: ({ sessionStatus, sessionGone }) => {
+        if (!sessionStatus || sessionGone) {
+          return true
+        }
+        return !isActiveSessionStatus(sessionStatus)
+      },
     })
+  }
+
+  private async buildActiveSessionStaleWatchdogError(
+    task: BackgroundTask,
+    sessionStatus: string,
+  ): Promise<{ errorInfo: { name: string; message: string }; failMessage: string } | undefined> {
+    const startedAt = task.startedAt
+    if (!startedAt) {
+      return undefined
+    }
+    if (task.teamRunId) {
+      return undefined
+    }
+
+    const now = Date.now()
+    const runtimeMs = now - startedAt.getTime()
+
+    if (!task.progress?.lastUpdate) {
+      const messageStalenessTimeoutMs = this.config?.messageStalenessTimeoutMs ?? DEFAULT_MESSAGE_STALENESS_TIMEOUT_MS
+      if (runtimeMs <= messageStalenessTimeoutMs) {
+        return undefined
+      }
+
+      const activityRefresh = await refreshTaskActivityFromSession(
+        task,
+        (sessionID) => getSessionActivityFromClient(this.client, sessionID, this.directory),
+      )
+      if (activityRefresh.type === "unavailable") {
+        return undefined
+      }
+
+      const refreshedLastUpdate = task.progress?.lastUpdate.getTime()
+        ?? (activityRefresh.type === "activity" ? activityRefresh.activityTime : undefined)
+      if (refreshedLastUpdate !== undefined && now - refreshedLastUpdate <= messageStalenessTimeoutMs) {
+        return undefined
+      }
+
+      const runtimeMinutes = Math.round(runtimeMs / 60000)
+      const detail = `Active background session stale watchdog: session status ${sessionStatus} with no progress for ${runtimeMinutes} minute(s) since start (timeout ${Math.round(messageStalenessTimeoutMs / 60000)} minute(s)).`
+      return {
+        errorInfo: {
+          name: "ModelUnavailableError",
+          message: detail,
+        },
+        failMessage: `${detail} Fallback retry unavailable or exhausted.`,
+      }
+    }
+
+    if (runtimeMs < MIN_RUNTIME_BEFORE_STALE_MS) {
+      return undefined
+    }
+
+    const staleTimeoutMs = this.config?.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS
+    const timeSinceLastUpdateMs = now - task.progress.lastUpdate.getTime()
+    if (timeSinceLastUpdateMs <= staleTimeoutMs) {
+      return undefined
+    }
+
+    const activityRefresh = await refreshTaskActivityFromSession(
+      task,
+      (sessionID) => getSessionActivityFromClient(this.client, sessionID, this.directory),
+    )
+    if (activityRefresh.type === "unavailable") {
+      return undefined
+    }
+
+    const refreshedLastUpdate = task.progress?.lastUpdate.getTime()
+      ?? (activityRefresh.type === "activity" ? activityRefresh.activityTime : undefined)
+    if (refreshedLastUpdate !== undefined && now - refreshedLastUpdate <= staleTimeoutMs) {
+      return undefined
+    }
+
+    const effectiveTimeSinceLastUpdateMs = refreshedLastUpdate !== undefined
+      ? now - refreshedLastUpdate
+      : timeSinceLastUpdateMs
+    const staleMinutes = Math.round(effectiveTimeSinceLastUpdateMs / 60000)
+    const detail = `Active background session stale watchdog: session status ${sessionStatus} with no progress update for ${staleMinutes} minute(s) (timeout ${Math.round(staleTimeoutMs / 60000)} minute(s)).`
+    return {
+      errorInfo: {
+        name: "ModelUnavailableError",
+        message: detail,
+      },
+      failMessage: `${detail} Fallback retry unavailable or exhausted.`,
+    }
   }
 
   private async verifySessionExists(sessionID: string): Promise<boolean> {
@@ -2753,6 +2848,23 @@ The task was re-queued on a fallback model after a retryable failure.
           // Only skip completion when session status is actively running.
           // Unknown or terminal statuses (like "interrupted") fall through to completion.
           if (sessionStatus && isActiveSessionStatus(sessionStatus.type)) {
+            const staleWatchdogError = await this.buildActiveSessionStaleWatchdogError(task, sessionStatus.type)
+            if (staleWatchdogError) {
+              log("[background-agent] Active session stale watchdog triggered:", {
+                taskId: task.id,
+                sessionID,
+                sessionStatus: sessionStatus.type,
+                message: staleWatchdogError.errorInfo.message,
+              })
+              if (await this.tryFallbackRetry(task, staleWatchdogError.errorInfo, "polling:active-session.stale-watchdog")) {
+                continue
+              }
+
+              await this.abortSessionWithLogging(sessionID, "active-session stale watchdog")
+              await this.failCrashedTask(task, staleWatchdogError.failMessage)
+              continue
+            }
+
             log("[background-agent] Session still running, relying on event-based progress:", {
               taskId: task.id,
               sessionID,
