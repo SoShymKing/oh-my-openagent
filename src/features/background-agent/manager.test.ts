@@ -4814,7 +4814,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
     expect(task.status).toBe("cancelled")
   })
 
-  test("should interrupt running session when lastUpdate exceeds stale timeout", async () => {
+  test("should leave active running session for pollRunningTasks watchdog when lastUpdate exceeds stale timeout", async () => {
     //#given
     const client = {
       session: {
@@ -4845,12 +4845,12 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
 
     getTaskMap(manager).set(task.id, task)
 
-    //#when - session still reports running, but progress is stale
+    //#when - stale sweep sees an active running session
     await manager["checkAndInterruptStaleTasks"]({ "session-running": { type: "running" } })
 
     //#then
-    expect(task.status).toBe("cancelled")
-    expect(task.error).toContain("Stale timeout")
+    expect(task.status).toBe("running")
+    expect(task.error).toBeUndefined()
   })
 
   test("should interrupt task when session is idle and lastUpdate exceeds stale timeout", async () => {
@@ -4894,7 +4894,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
     expect(task.error).toContain("Stale timeout")
   })
 
-  test("should interrupt running session even with very old lastUpdate", async () => {
+  test("should leave active running session for pollRunningTasks watchdog even with very old lastUpdate", async () => {
     //#given
     const client = {
       session: {
@@ -4924,15 +4924,15 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
 
     getTaskMap(manager).set(task.id, task)
 
-    //#when - session is running, lastUpdate 15min old
+    //#when - stale sweep sees an active running session with old progress
     await manager["checkAndInterruptStaleTasks"]({ "session-long": { type: "running" } })
 
     //#then
-    expect(task.status).toBe("cancelled")
-    expect(task.error).toContain("Stale timeout")
+    expect(task.status).toBe("running")
+    expect(task.error).toBeUndefined()
   })
 
-  test("should interrupt running session with no progress after message staleness timeout", async () => {
+  test("should leave active running session with no progress for pollRunningTasks watchdog", async () => {
     //#given - no progress at all, but session is running
     const client = {
       session: {
@@ -4960,12 +4960,12 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
 
     getTaskMap(manager).set(task.id, task)
 
-    //#when - session is running despite no progress
+    //#when - stale sweep sees an active running session despite no progress
     await manager["checkAndInterruptStaleTasks"]({ "session-rnp": { type: "running" } })
 
     //#then
-    expect(task.status).toBe("cancelled")
-    expect(task.error).toContain("no activity")
+    expect(task.status).toBe("running")
+    expect(task.error).toBeUndefined()
   })
 
   test("should interrupt task with no lastUpdate after messageStalenessTimeout", async () => {

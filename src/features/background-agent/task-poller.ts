@@ -180,6 +180,12 @@ export async function checkAndInterruptStaleTasks(args: {
   notifyParentSession: (task: BackgroundTask) => Promise<void>
   sessionStatuses?: SessionStatusMap
   onTaskInterrupted?: (task: BackgroundTask) => void
+  shouldInterruptTask?: (args: {
+    task: BackgroundTask
+    sessionStatus?: string
+    sessionGone: boolean
+    noProgress: boolean
+  }) => boolean
   getSessionActivity?: SessionActivityResolver
 }): Promise<void> {
   const {
@@ -191,6 +197,7 @@ export async function checkAndInterruptStaleTasks(args: {
     notifyParentSession,
     sessionStatuses,
     onTaskInterrupted = (task) => removeTaskToastTracking(task.id),
+    shouldInterruptTask = () => true,
   } = args
   const staleTimeoutMs = config?.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS
   const sessionGoneTimeoutMs = config?.sessionGoneTimeoutMs ?? DEFAULT_SESSION_GONE_TIMEOUT_MS
@@ -229,6 +236,10 @@ export async function checkAndInterruptStaleTasks(args: {
       if (sessionMissing && !sessionGone) continue
       const effectiveTimeout = sessionGone ? sessionGoneTimeoutMs : messageStalenessMs
       if (runtime <= effectiveTimeout) continue
+
+      if (!shouldInterruptTask({ task, sessionStatus, sessionGone, noProgress: true })) {
+        continue
+      }
 
       if (shouldRefreshFromSessionActivity) {
         const activityRefresh = await refreshTaskActivityFromSession(task, getSessionActivity)
@@ -272,6 +283,10 @@ export async function checkAndInterruptStaleTasks(args: {
     let timeSinceLastUpdate = now - task.progress.lastUpdate.getTime()
     const effectiveStaleTimeout = sessionGone ? sessionGoneTimeoutMs : staleTimeoutMs
     if (timeSinceLastUpdate <= effectiveStaleTimeout) continue
+
+    if (!shouldInterruptTask({ task, sessionStatus, sessionGone, noProgress: false })) {
+      continue
+    }
 
     if (shouldRefreshFromSessionActivity) {
       const activityRefresh = await refreshTaskActivityFromSession(task, getSessionActivity)
