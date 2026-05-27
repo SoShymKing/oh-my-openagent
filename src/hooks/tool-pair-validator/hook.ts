@@ -242,12 +242,12 @@ function repairSubAgentMissingToolResults(messages: MessageWithParts[], assistan
   const analysis = analyzeMissingToolResults(messages, assistantIndex)
 
   if (!analysis.needsRepair) {
-    log("[tool-pair-validator] Skipping repair for subagent session", {
-      sessionID,
-      assistantMessageID: analysis.assistantMessageID,
-      toolUseCount: analysis.toolUseIDs.length,
-      needsRepair: false,
-    })
+    // log("[tool-pair-validator] Skipping repair for subagent session", {
+    //   sessionID,
+    //   assistantMessageID: analysis.assistantMessageID,
+    //   toolUseCount: analysis.toolUseIDs.length,
+    //   needsRepair: false,
+    // })
     return
   }
 
