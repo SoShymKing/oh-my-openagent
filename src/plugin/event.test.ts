@@ -8,9 +8,6 @@ import * as openclawRuntimeDispatch from "../openclaw/runtime-dispatch"
 import { _resetForTesting, setMainSession, subagentSessions } from "../features/claude-code-session-state"
 import { clearPendingModelFallback, createModelFallbackHook } from "../hooks/model-fallback/hook"
 import { getSessionPromptParams, setSessionPromptParams } from "../shared/session-prompt-params-state"
-import * as sharedTmuxOriginal from "../shared/tmux"
-
-const sharedTmuxSnapshot = { ...sharedTmuxOriginal }
 
 type EventInput = { event: { type: string; properties?: unknown } }
 type EventHandlerArgs = Parameters<typeof createEventHandler>[0]
@@ -148,7 +145,6 @@ async function flushMicrotasks(turns: number = 5): Promise<void> {
 
 afterEach(() => {
 	mock.restore()
-	mock.module("../shared/tmux", () => sharedTmuxSnapshot)
 	_resetForTesting()
 })
 
@@ -391,7 +387,7 @@ describe("createEventHandler - idle deduplication", () => {
 		expect(spawnTmuxPane).toHaveBeenCalledTimes(1)
 	})
 
-	it("does NOT dedup real-idle-after-synthetic-idle within 500ms", async () => {
+	it("#given session.status already emitted a synthetic idle #when real session.idle follows immediately #then hooks run once", async () => {
 		//#given
 		const dispatchCalls: EventInput[] = []
 		const eventHandler = createIdleTrackingEventHandler(dispatchCalls)
@@ -415,11 +411,9 @@ describe("createEventHandler - idle deduplication", () => {
 		}))
 
 		//#then
-		expect(dispatchCalls).toHaveLength(2)
+		expect(dispatchCalls).toHaveLength(1)
 		expect(dispatchCalls[0]?.event.type).toBe("session.idle")
 		expect((dispatchCalls[0]?.event.properties as { sessionID?: string } | undefined)?.sessionID).toBe(sessionId)
-		expect(dispatchCalls[1]?.event.type).toBe("session.idle")
-		expect((dispatchCalls[1]?.event.properties as { sessionID?: string } | undefined)?.sessionID).toBe(sessionId)
 	})
 
 	it("#given idle recovery handles an interrupted tool turn #when session.idle arrives #then later idle hooks are skipped for that event", async () => {
@@ -619,7 +613,7 @@ describe("createEventHandler - idle deduplication", () => {
 		}
 	})
 
-	it("keeps other session dedup state untouched when bypassing synthetic-idle for current session", async () => {
+	it("keeps other session dedup state untouched when suppressing real-idle-after-synthetic-idle", async () => {
 		//#given
 		const originalDateNow = Date.now
 		let currentNow = 30_000
@@ -679,7 +673,7 @@ describe("createEventHandler - idle deduplication", () => {
 			}))
 
 			//#then
-			expect(dispatchedSessionIds).toEqual(["ses_a", "ses_b", "ses_a"])
+			expect(dispatchedSessionIds).toEqual(["ses_a", "ses_b"])
 		} finally {
 			Date.now = originalDateNow
 		}
@@ -828,7 +822,6 @@ describe("createEventHandler - idle deduplication", () => {
 				sessionNotification: async () => {},
 				todoContinuationEnforcer: { handler: async () => {} },
 				unstableAgentBabysitter: { event: async () => {} },
-				contextWindowMonitor: { event: async () => {} },
 				directoryAgentsInjector: { event: async () => {} },
 				directoryReadmeInjector: { event: async () => {} },
 				rulesInjector: { event: async () => {} },
@@ -913,7 +906,6 @@ describe("createEventHandler - idle deduplication", () => {
 				sessionNotification: async () => {},
 				todoContinuationEnforcer: { handler: async () => {} },
 				unstableAgentBabysitter: { event: async () => {} },
-				contextWindowMonitor: { event: async () => {} },
 				directoryAgentsInjector: { event: async () => {} },
 				directoryReadmeInjector: { event: async () => {} },
 				rulesInjector: { event: async () => {} },
@@ -970,7 +962,6 @@ describe("createEventHandler - idle deduplication", () => {
 				sessionNotification: async () => {},
 				todoContinuationEnforcer: { handler: async () => {} },
 				unstableAgentBabysitter: { event: async () => {} },
-				contextWindowMonitor: { event: async () => {} },
 				directoryAgentsInjector: { event: async () => {} },
 				directoryReadmeInjector: { event: async () => {} },
 				rulesInjector: { event: async () => {} },
@@ -1876,9 +1867,7 @@ describe("createEventHandler - session recovery compaction", () => {
 				stopContinuationGuard: { isStopped: () => false },
 			}),
 		})
-		let thrownError: unknown
-		try {
-			await eventHandler(asEventHandlerInput({
+		await expect(eventHandler(asEventHandlerInput({
 				event: {
 					type: "session.error",
 					properties: {
@@ -1886,12 +1875,87 @@ describe("createEventHandler - session recovery compaction", () => {
 						error: { name: "Error", message: "retry me" },
 					},
 				},
-			}))
-		} catch (error) {
-			thrownError = error
-		}
-		expect(thrownError).toBeUndefined()
+			}))).resolves.toBeUndefined()
 		expect(runtimeFallbackCalls).toHaveLength(1)
 		expect(runtimeFallbackCalls[0]?.event.type).toBe("session.error")
+	})
+
+	it("preserves hook fan-out order while isolating individual hook failures", async () => {
+		const calls: string[] = []
+
+		const eventHandler = createEventHandler({
+			ctx: asEventHandlerContext({
+				directory: "/tmp",
+				client: {
+					session: {
+						abort: async () => ({}),
+						prompt: async () => ({}),
+					},
+				},
+			}),
+			pluginConfig: asPluginConfig({}),
+			firstMessageVariantGate: {
+				markSessionCreated: () => {},
+				clear: () => {},
+			},
+			managers: createEventHandlerManagers(),
+			hooks: createEventHandlerHooks({
+				autoUpdateChecker: {
+					event: async () => {
+						calls.push("autoUpdateChecker")
+					},
+				},
+				legacyPluginToast: {
+					event: async () => {
+						calls.push("legacyPluginToast")
+						throw new Error("toast failed")
+					},
+				},
+				claudeCodeHooks: {
+					event: async () => {
+						calls.push("claudeCodeHooks")
+					},
+				},
+				backgroundNotificationHook: {
+					event: async () => {
+						calls.push("backgroundNotificationHook")
+					},
+				},
+				sessionNotification: async () => {
+					calls.push("sessionNotification")
+				},
+				runtimeFallback: {
+					event: async () => {
+						calls.push("runtimeFallback")
+					},
+				},
+				writeExistingFileGuard: {
+					event: async () => {
+						calls.push("writeExistingFileGuard")
+					},
+				},
+				stopContinuationGuard: { isStopped: () => false },
+			}),
+		})
+
+		await eventHandler(asEventHandlerInput({
+			event: {
+				type: "session.error",
+				properties: {
+					sessionID: "ses_hook_order",
+					error: { name: "Error", message: "retry me" },
+				},
+			},
+		}))
+
+		expect(calls).toEqual([
+			"autoUpdateChecker",
+			"legacyPluginToast",
+			"claudeCodeHooks",
+			"backgroundNotificationHook",
+			"sessionNotification",
+			"runtimeFallback",
+			"writeExistingFileGuard",
+		])
 	})
 })

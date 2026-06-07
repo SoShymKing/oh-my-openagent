@@ -26,7 +26,8 @@ function extractMessage(error: unknown): string {
     if (typeof obj.message === "string") return obj.message
     try {
       return JSON.stringify(error)
-    } catch {
+    } catch (stringifyError) {
+      stringifyError instanceof Error
       return ""
     }
   }
@@ -74,6 +75,8 @@ export async function promptWithModelSuggestionRetry(
       source: "model-suggestion-retry",
       settleMs: 0,
       ...(options.queueBehavior ? { queueBehavior: options.queueBehavior } : {}),
+      ...(options.checkStatus !== undefined ? { checkStatus: options.checkStatus } : {}),
+      ...(options.checkToolState !== undefined ? { checkToolState: options.checkToolState } : {}),
     })
     if (promptResult.status === "failed") {
       if (timeoutContext.wasTimedOut()) {

@@ -11,6 +11,7 @@ import { isSessionActive as isOpenCodeSessionActive } from "../../hooks/shared/s
 import {
   createInternalAgentTextPart,
   getAgentToolRestrictions,
+  hasInternalInitiatorMarker,
   isAmbiguousPostDispatchPromptFailure,
   log,
   messagesInDirectory,
@@ -71,7 +72,9 @@ import {
   isAbortedSessionError,
   isRecord,
 } from "./error-classifier"
+import { isEmptyNoProgressAssistantTurnInfo } from "./empty-assistant-turn"
 import { tryFallbackRetry } from "./fallback-retry-handler"
+import { messageUpdatedInfoHasParentWakeOutput } from "./message-updated-parent-wake-output"
 import {
   type CircuitBreakerSettings,
   detectRepetitiveToolUse,
@@ -79,6 +82,7 @@ import {
   resolveCircuitBreakerSettings,
 } from "./loop-detector"
 import { ParentWakeNotifier, type ParentWakePromptContext } from "./parent-wake-notifier"
+import type { PendingParentWake } from "./parent-wake-dedupe"
 import { registerManagerForCleanup, unregisterManagerForCleanup } from "./process-cleanup"
 import { removeTaskToastTracking } from "./remove-task-toast-tracking"
 import {
@@ -89,6 +93,7 @@ import { getSessionActivityFromClient } from "./session-activity"
 import { handleSessionIdleBackgroundEvent } from "./session-idle-event-handler"
 import {
   hasOutputSignalFromPart,
+  isInternalInitiatorTextPart,
   isMessagePartForSession,
   resolveMessagePartInfo,
   resolveSessionNextPartInfo,
@@ -154,11 +159,11 @@ const PARENT_WAKE_TOOL_CALL_DEFER_MAX_MS = 5_000
  * env. See issue #4120.
  */
 const PARENT_WAKE_USER_MESSAGE_IN_PROGRESS_WINDOW_MS = 2_000
-const PARENT_WAKE_SESSION_ACTIVITY_IN_PROGRESS_WINDOW_MS = 2_000
+const PARENT_WAKE_SESSION_ACTIVITY_IN_PROGRESS_WINDOW_MS = PARENT_WAKE_TOOL_CALL_DEFER_MAX_MS
 
 interface EventProperties {
   sessionID?: string
-  info?: { id?: string; sessionID?: string }
+  info?: { id?: string; sessionID?: string; role?: unknown; error?: unknown; [key: string]: unknown }
   [key: string]: unknown
 }
 
@@ -258,6 +263,7 @@ export class BackgroundManager {
   private idleDeferralTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private notificationQueueByParent: Map<string, Promise<void>> = new Map()
   private readonly parentWakeNotifier: ParentWakeNotifier
+  private parentWakeTextDeltaBuffers: Map<string, string> = new Map()
   private observedOutputSessions: Set<string> = new Set()
   private observedIncompleteTodosBySession: Map<string, boolean> = new Map()
   private rootDescendantCounts: Map<string, number>
@@ -605,9 +611,10 @@ export class BackgroundManager {
       }
 
       // Add to queue
-      const key = this.getConcurrencyKeyFromInput(input)
+      const rawConcurrencyKey = this.getRawConcurrencyKeyFromInput(input)
+      const key = this.concurrencyManager.getConcurrencyKey(rawConcurrencyKey)
       const queue = this.queuesByKey.get(key) ?? []
-      queue.push({ task, input, attemptID: firstAttempt.attemptId })
+      queue.push({ task, input, attemptID: firstAttempt.attemptId, rawConcurrencyKey })
       this.queuesByKey.set(key, queue)
 
       log("[background-agent] Task queued:", { taskId: task.id, key, queueLength: queue.length })
@@ -655,7 +662,15 @@ export class BackgroundManager {
           continue
         }
 
-        await this.concurrencyManager.acquire(key)
+        try {
+          await this.concurrencyManager.acquire(item.rawConcurrencyKey ?? key, item.task.id)
+        } catch (error) {
+          if (item.task.status === "cancelled" || item.task.status === "error" || item.task.status === "interrupt") {
+            this.rollbackPreStartDescendantReservation(item.task)
+            continue
+          }
+          throw error
+        }
 
         if (item.task.status === "cancelled" || item.task.status === "error" || item.task.status === "interrupt") {
           this.rollbackPreStartDescendantReservation(item.task)
@@ -1044,6 +1059,11 @@ The fallback retry session is now created and can be inspected directly.
     return tasks
   }
 
+  /** Return whether a session has direct child background tasks still in flight. */
+  hasActiveChildTasks(sessionID: string): boolean {
+    return this.getTasksByParentSession(sessionID).some(t => t.status === "running" || t.status === "pending")
+  }
+
   private updateBackgroundTaskMarker(parentSessionID: string): void {
     const tasks = this.getTasksByParentSession(parentSessionID)
     const activeTasks = tasks.filter(t => t.status === "running" || t.status === "pending")
@@ -1109,10 +1129,21 @@ The fallback retry session is now created and can be inspected directly.
   }
 
   private getConcurrencyKeyFromInput(input: LaunchInput): string {
-    if (input.model) {
-      return `${input.model.providerID}/${input.model.modelID}`
-    }
-    return input.agent
+    return this.concurrencyManager.getConcurrencyKey(this.getRawConcurrencyKeyFromInput(input))
+  }
+
+  private getRawConcurrencyKeyFromInput(input: LaunchInput): string {
+    const modelKey = input.model
+      ? `${input.model.providerID}/${input.model.modelID}`
+      : input.agent
+
+    return modelKey
+  }
+
+  private getRawConcurrencyKeyFromTask(task: Pick<BackgroundTask, "model" | "agent">): string {
+    return task.model
+      ? `${task.model.providerID}/${task.model.modelID}`
+      : task.agent
   }
 
   /**
@@ -1141,7 +1172,9 @@ The fallback retry session is now created and can be inspected directly.
         existingTask.parentAgent = input.parentAgent
       }
       if (!existingTask.concurrencyGroup) {
-        existingTask.concurrencyGroup = input.concurrencyKey ?? existingTask.agent
+        existingTask.concurrencyGroup = input.concurrencyKey
+          ? this.concurrencyManager.getConcurrencyKey(input.concurrencyKey)
+          : existingTask.agent
       }
 
       if (existingTask.sessionId) {
@@ -1164,11 +1197,14 @@ The fallback retry session is now created and can be inspected directly.
       return existingTask
     }
 
-    const concurrencyGroup = input.concurrencyKey ?? input.agent ?? "task"
+    const concurrencyKey = input.concurrencyKey
+      ? this.concurrencyManager.getConcurrencyKey(input.concurrencyKey)
+      : undefined
+    const concurrencyGroup = concurrencyKey ?? input.agent ?? "task"
 
     // Acquire concurrency slot if a key is provided
-    if (input.concurrencyKey) {
-      await this.concurrencyManager.acquire(input.concurrencyKey)
+    if (concurrencyKey) {
+      await this.concurrencyManager.acquire(concurrencyKey)
     }
 
     const task: BackgroundTask = {
@@ -1186,7 +1222,7 @@ The fallback retry session is now created and can be inspected directly.
         lastUpdate: new Date(),
       },
       parentAgent: input.parentAgent,
-      concurrencyKey: input.concurrencyKey,
+      concurrencyKey,
       concurrencyGroup,
     }
 
@@ -1232,7 +1268,9 @@ The fallback retry session is now created and can be inspected directly.
     }
 
     // Re-acquire concurrency using the persisted concurrency group
-    const concurrencyKey = existingTask.concurrencyGroup ?? existingTask.agent
+    const concurrencyKey = this.concurrencyManager.getConcurrencyKey(
+      existingTask.concurrencyGroup ?? existingTask.agent,
+    )
     await this.concurrencyManager.acquire(concurrencyKey)
     existingTask.concurrencyKey = concurrencyKey
     existingTask.concurrencyGroup = concurrencyKey
@@ -1439,6 +1477,7 @@ The fallback retry session is now created and can be inspected directly.
   }
 
   private clearDispatchedParentWake(sessionID: string): void {
+    this.clearParentWakeTextDeltaBuffers(sessionID)
     this.parentWakeNotifier.clearDispatchedParentWake(sessionID)
   }
 
@@ -1452,6 +1491,70 @@ The fallback retry session is now created and can be inspected directly.
 
   private clearSessionTodoObservation(sessionID: string): void {
     this.observedIncompleteTodosBySession.delete(sessionID)
+  }
+
+  private messageUpdatedInfoHasParentWakeOutput(info: Record<string, unknown>, role: unknown): boolean {
+    if (role === "tool") {
+      return true
+    }
+    if (role !== "assistant") {
+      return false
+    }
+    if (info.error) {
+      return false
+    }
+    return !isEmptyNoProgressAssistantTurnInfo(info)
+  }
+
+  private shouldHoldDispatchedParentWakeForTextDelta(
+    eventType: string,
+    partInfo: ReturnType<typeof resolveMessagePartInfo>,
+    sessionID: string,
+    wake: PendingParentWake | undefined,
+  ): boolean {
+    if (eventType !== "message.part.delta") {
+      return false
+    }
+    if (!wake) {
+      return false
+    }
+    if (!partInfo || typeof partInfo.delta !== "string") {
+      return false
+    }
+    if (partInfo.field !== "text" && partInfo.type !== "text") {
+      return false
+    }
+
+    const key = this.parentWakeTextDeltaBufferKey(sessionID, partInfo)
+    const candidate = `${this.parentWakeTextDeltaBuffers.get(key) ?? ""}${partInfo.delta}`
+    const expectedInternalWakeText = createInternalAgentTextPart(wake.notifications.join("\n\n")).text
+    const expectedVisibleInternalWakeText = expectedInternalWakeText.replace(/<\/?system-reminder>/g, "")
+    const shouldHold =
+      expectedInternalWakeText.startsWith(candidate)
+      || expectedVisibleInternalWakeText.startsWith(candidate)
+      || hasInternalInitiatorMarker(candidate)
+    if (shouldHold) {
+      this.parentWakeTextDeltaBuffers.set(key, candidate)
+    } else {
+      this.parentWakeTextDeltaBuffers.delete(key)
+    }
+    return shouldHold
+  }
+
+  private parentWakeTextDeltaBufferKey(
+    sessionID: string,
+    partInfo: ReturnType<typeof resolveMessagePartInfo>,
+  ): string {
+    return `${sessionID}:${partInfo?.id ?? "unknown"}`
+  }
+
+  private clearParentWakeTextDeltaBuffers(sessionID: string): void {
+    const prefix = `${sessionID}:`
+    for (const key of this.parentWakeTextDeltaBuffers.keys()) {
+      if (key.startsWith(prefix)) {
+        this.parentWakeTextDeltaBuffers.delete(key)
+      }
+    }
   }
 
   handleEvent(event: Event): void {
@@ -1471,13 +1574,23 @@ The fallback retry session is now created and can be inspected directly.
 
     if (event.type === "message.updated") {
       const info = props?.info
-      if (!info || typeof info !== "object") return
+      if (!isRecord(info)) return
 
       const sessionID = resolveMessageEventSessionID(props)
-      const role = (info as Record<string, unknown>)["role"]
+      const role = info.role
       if (!sessionID) return
-      this.clearDispatchedParentWake(sessionID)
+      if (isEmptyNoProgressAssistantTurnInfo(info)) {
+        const dispatchedWake = this.parentWakeNotifier.getDispatchedParentWakes().get(sessionID)
+        if (dispatchedWake) {
+          this.parentWakeNotifier.requeueDispatchedParentWakeAfterEmptyAssistantTurn(sessionID)
+          return
+        }
+      }
       this.parentWakeNotifier.recordParentSessionActivity(sessionID)
+
+      if (messageUpdatedInfoHasParentWakeOutput(info, role)) {
+        this.clearDispatchedParentWake(sessionID)
+      }
 
       if (role === "tool") {
         this.markSessionOutputObserved(sessionID)
@@ -1491,7 +1604,7 @@ The fallback retry session is now created and can be inspected directly.
       const { task } = resolved
       if (task.status !== "running") return
 
-      const assistantError = (info as Record<string, unknown>)["error"]
+      const assistantError = info.error
       if (!assistantError) return
 
       const errorInfo = {
@@ -1512,15 +1625,32 @@ The fallback retry session is now created and can be inspected directly.
       const sessionID = resolveMessageEventSessionID(props)
       if (!sessionID) return
       if (!isMessagePartForSession(partInfo, sessionID)) return
-      this.clearDispatchedParentWake(sessionID)
-      this.parentWakeNotifier.recordParentSessionActivity(sessionID)
+      const isUserPart = partInfo?.role === "user"
+      const isInternalWakePart = isInternalInitiatorTextPart(partInfo, sessionID)
+      const dispatchedWake = this.parentWakeNotifier.getDispatchedParentWakes().get(sessionID)
+      const holdDispatchedWakeForTextDelta = this.shouldHoldDispatchedParentWakeForTextDelta(
+        event.type,
+        partInfo,
+        sessionID,
+        dispatchedWake,
+      )
+      const hasParentWakeOutput = hasOutputSignalFromPart(partInfo, sessionID)
+        && !isUserPart
+        && !isInternalWakePart
+        && !holdDispatchedWakeForTextDelta
+      if (hasParentWakeOutput) {
+        this.clearDispatchedParentWake(sessionID)
+      }
+      if (!isUserPart && !isInternalWakePart && !holdDispatchedWakeForTextDelta) {
+        this.parentWakeNotifier.recordParentSessionActivity(sessionID)
+      }
 
       const resolved = this.resolveTaskAttemptBySession(sessionID)
       if (!resolved?.isCurrent) return
 
       const { task } = resolved
 
-      if (hasOutputSignalFromPart(partInfo, sessionID)) {
+      if (hasParentWakeOutput) {
         this.markSessionOutputObserved(sessionID)
       }
 
@@ -1646,9 +1776,13 @@ The fallback retry session is now created and can be inspected directly.
 
       const resolved = this.resolveTaskAttemptBySession(sessionID)
       if (this.parentWakeNotifier.getDispatchedParentWakes().has(sessionID) || !resolved?.isCurrent) {
-        void this.requeueDispatchedParentWake(sessionID, "session.error").catch((error) => {
-          log("[background-agent] Failed to requeue dispatched parent wake:", { sessionID, error })
-        })
+        void this.requeueDispatchedParentWake(sessionID, "session.error")
+          .then(() => {
+            this.clearParentWakeTextDeltaBuffers(sessionID)
+          })
+          .catch((error) => {
+            log("[background-agent] Failed to requeue dispatched parent wake:", { sessionID, error })
+          })
         return
       }
 
@@ -2038,10 +2172,10 @@ The task was re-queued on a fallback model after a retryable failure.
       }, this.directory)
 
       const messages = normalizeSDKResponse(response, [] as Array<{ info?: { role?: string } }>, { preferResponseOnMissingData: true })
-      
+
       // Check for at least one assistant or tool message
       const hasAssistantOrToolMessage = messages.some(
-        (m: { info?: { role?: string } }) => 
+        (m: { info?: { role?: string } }) =>
           m.info?.role === "assistant" || m.info?.role === "tool"
       )
 
@@ -2060,7 +2194,7 @@ The task was re-queued on a fallback model after a retryable failure.
         if (m.info?.role !== "assistant" && m.info?.role !== "tool") return false
         const parts = m.parts ?? []
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return parts.some((p: any) => 
+      return parts.some((p: any) =>
         // Text content (final output)
         (p.type === "text" && p.text && p.text.trim().length > 0) ||
         // Reasoning content (thinking blocks)
@@ -2068,7 +2202,7 @@ The task was re-queued on a fallback model after a retryable failure.
         // Tool calls (indicates work was done)
         p.type === "tool" ||
         // Tool results (output from executed tools) - important for tool-only tasks
-        (p.type === "tool_result" && p.content && 
+        (p.type === "tool_result" && p.content &&
           (typeof p.content === "string" ? p.content.trim().length > 0 : p.content.length > 0))
       )
       })
@@ -2173,9 +2307,8 @@ The task was re-queued on a fallback model after a retryable failure.
     const reason = options?.reason
 
     if (task.status === "pending") {
-      const key = task.model
-        ? `${task.model.providerID}/${task.model.modelID}`
-        : task.agent
+      const rawKey = this.getRawConcurrencyKeyFromTask(task)
+      const key = this.concurrencyManager.getConcurrencyKey(rawKey)
       const queue = this.queuesByKey.get(key)
       if (queue) {
         const index = queue.findIndex(item => item.task.id === taskId)
@@ -2187,6 +2320,7 @@ The task was re-queued on a fallback model after a retryable failure.
         }
       }
       this.rollbackPreStartDescendantReservation(task)
+      this.concurrencyManager.cancelWaiter(rawKey, taskId)
       log("[background-agent] Cancelled pending task:", { taskId, key })
     }
 
@@ -2614,9 +2748,7 @@ The task was re-queued on a fallback model after a retryable failure.
           this.idleDeferralTimers.delete(taskId)
         }
         if (wasPending) {
-          const key = task.model
-            ? `${task.model.providerID}/${task.model.modelID}`
-            : task.agent
+          const key = this.concurrencyManager.getConcurrencyKey(this.getRawConcurrencyKeyFromTask(task))
           const queue = this.queuesByKey.get(key)
           if (queue) {
             const index = queue.findIndex((item) => item.task.id === taskId)
@@ -2828,7 +2960,7 @@ The task was re-queued on a fallback model after a retryable failure.
 
       for (const task of this.tasks.values()) {
         if (task.status !== "running") continue
-        
+
         const sessionID = task.sessionId
         if (!sessionID) continue
 

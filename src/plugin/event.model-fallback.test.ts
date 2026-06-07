@@ -628,6 +628,89 @@ describe("createEventHandler - model fallback", () => {
     expect(promptCalls).toEqual([sessionID])
   })
 
+  test("re-handles the same retry key after session recovers through session.idle", async () => {
+    //#given
+    const sessionID = "ses_status_retry_real_idle_reset"
+    setMainSession(sessionID)
+    const modelFallback = createModelFallbackHook()
+    clearPendingModelFallback(modelFallback, sessionID)
+    const { handler, abortCalls, promptCalls } = createHandler({ hooks: { modelFallback } })
+    const chatMessageHandler = createChatMessageHandler({
+      ctx: unsafeTestValue({
+        client: {
+          tui: {
+            showToast: async () => ({}),
+          },
+        },
+      }),
+      pluginConfig: unsafeTestValue({}),
+      firstMessageVariantGate: {
+        shouldOverride: () => false,
+        markApplied: () => {},
+      },
+      hooks: unsafeTestValue({
+        modelFallback,
+        stopContinuationGuard: null,
+        keywordDetector: null,
+        claudeCodeHooks: null,
+        autoSlashCommand: null,
+        startWork: null,
+        ralphLoop: null,
+      }),
+    })
+    const retryStatus = {
+      type: "session.status",
+      properties: {
+        sessionID,
+        status: {
+          type: "retry",
+          attempt: 1,
+          message:
+            "All credentials for model claude-opus-4-7-thinking are cooling down [retrying in ~5 days attempt #1]",
+          next: 300,
+        },
+      },
+    }
+
+    await handler({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "msg_user_status_idle_reset",
+            sessionID,
+            role: "user",
+            modelID: "claude-opus-4-7-thinking",
+            providerID: "anthropic",
+            agent: "Sisyphus - Ultraworker",
+          },
+        },
+      },
+    })
+
+    //#when
+    await handler({ event: retryStatus })
+    await chatMessageHandler(
+      {
+        sessionID,
+        agent: "sisyphus",
+        model: { providerID: "anthropic", modelID: "claude-opus-4-7-thinking" },
+      },
+      { message: {}, parts: [] },
+    )
+    await handler({
+      event: {
+        type: "session.idle",
+        properties: { sessionID },
+      },
+    })
+    await handler({ event: retryStatus })
+
+    //#then
+    expect(abortCalls).toEqual([sessionID, sessionID])
+    expect(promptCalls).toEqual([sessionID, sessionID])
+  })
+
   test("does not leave stale pending fallback when a providerless duplicate arrives after fallback was applied", async () => {
     //#given
     const sessionID = "ses_model_fallback_duplicate_surface"
@@ -791,7 +874,7 @@ describe("createEventHandler - model fallback", () => {
     const pluginConfig = {
       agents: {
         sisyphus: {
-          fallback_models: ["quotio/gpt-5.2", "quotio/kimi-k2.5"],
+          fallback_models: ["quotio/gpt-5.5", "quotio/kimi-k2.5"],
         },
       },
     }
@@ -873,7 +956,7 @@ describe("createEventHandler - model fallback", () => {
     expect(promptCalls).toEqual([sessionID])
     expect(output.message["model"]).toEqual({
       providerID: "quotio",
-      modelID: "gpt-5.2",
+      modelID: "gpt-5.5",
     })
     expect(output.message["variant"]).toBeUndefined()
   })

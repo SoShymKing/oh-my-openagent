@@ -10,6 +10,11 @@ import * as agentLoader from "../features/claude-code-agent-loader"
 import * as skillLoader from "../features/opencode-skill-loader"
 import type { LoadedSkill } from "../features/opencode-skill-loader"
 import { getAgentDisplayName, getAgentListDisplayName } from "../shared/agent-display-names"
+import {
+  isAgentRegistered,
+  registerAgentName,
+  _resetForTesting as resetSessionStateForTesting,
+} from "../features/claude-code-session-state"
 import { applyAgentConfig } from "./agent-config-handler"
 import type { PluginComponents } from "./plugin-components-loader"
 
@@ -61,6 +66,8 @@ describe("applyAgentConfig builtin override protection", () => {
   let discoverGlobalAgentsSkillsSpy: ReturnType<typeof spyOn>
   let loadUserAgentsSpy: ReturnType<typeof spyOn>
   let loadProjectAgentsSpy: ReturnType<typeof spyOn>
+  let loadOpencodeGlobalAgentsSpy: ReturnType<typeof spyOn>
+  let loadOpencodeProjectAgentsSpy: ReturnType<typeof spyOn>
   let loadAgentDefinitionsSpy: ReturnType<typeof spyOn>
   let readOpencodeConfigAgentsSpy: ReturnType<typeof spyOn>
   let migrateAgentConfigSpy: ReturnType<typeof spyOn>
@@ -99,6 +106,8 @@ describe("applyAgentConfig builtin override protection", () => {
   }
 
   beforeEach(() => {
+    resetSessionStateForTesting()
+
     createBuiltinAgentsSpy = spyOn(agents, "createBuiltinAgents").mockResolvedValue({
       sisyphus: builtinSisyphusConfig,
       oracle: builtinOracleConfig,
@@ -142,6 +151,8 @@ describe("applyAgentConfig builtin override protection", () => {
 
     loadUserAgentsSpy = spyOn(agentLoader, "loadUserAgents").mockReturnValue({})
     loadProjectAgentsSpy = spyOn(agentLoader, "loadProjectAgents").mockReturnValue({})
+    loadOpencodeGlobalAgentsSpy = spyOn(agentLoader, "loadOpencodeGlobalAgents").mockReturnValue({})
+    loadOpencodeProjectAgentsSpy = spyOn(agentLoader, "loadOpencodeProjectAgents").mockReturnValue({})
     loadAgentDefinitionsSpy = spyOn(agentLoader, "loadAgentDefinitions").mockReturnValue({})
     readOpencodeConfigAgentsSpy = spyOn(
       agentLoader,
@@ -155,6 +166,8 @@ describe("applyAgentConfig builtin override protection", () => {
   })
 
   afterEach(() => {
+    resetSessionStateForTesting()
+
     createBuiltinAgentsSpy.mockRestore()
     createSisyphusJuniorAgentSpy.mockRestore()
     discoverConfigSourceSkillsSpy.mockRestore()
@@ -166,6 +179,8 @@ describe("applyAgentConfig builtin override protection", () => {
     discoverGlobalAgentsSkillsSpy.mockRestore()
     loadUserAgentsSpy.mockRestore()
     loadProjectAgentsSpy.mockRestore()
+    loadOpencodeGlobalAgentsSpy.mockRestore()
+    loadOpencodeProjectAgentsSpy.mockRestore()
     loadAgentDefinitionsSpy.mockRestore()
     readOpencodeConfigAgentsSpy.mockRestore()
     migrateAgentConfigSpy.mockRestore()
@@ -534,6 +549,25 @@ describe("applyAgentConfig builtin override protection", () => {
     expect(pluginAgent.mode).toBe("subagent")
   })
 
+  test("replaces registered agent names when config is re-applied", async () => {
+    // given - a stale agent name from the previous OpenCode instance/config pass
+    registerAgentName("stale-connect-agent")
+    expect(isAgentRegistered("stale-connect-agent")).toBe(true)
+
+    // when - /connect causes OpenCode to re-enter the config hook
+    await applyAgentConfig({
+      config: createBaseConfig(),
+      pluginConfig: createPluginConfig(),
+      ctx: { directory: "/tmp" },
+      pluginComponents: createPluginComponents(),
+    })
+
+    // then - the lookup mirrors the freshly rebuilt agent config only
+    expect(isAgentRegistered("stale-connect-agent")).toBe(false)
+    expect(isAgentRegistered(BUILTIN_SISYPHUS_DISPLAY_NAME)).toBe(true)
+    expect(isAgentRegistered("sisyphus")).toBe(true)
+  })
+
   test("includes project and global .agents skills in builtin agent awareness", async () => {
     // given
     const projectAgentsSkill = {
@@ -706,6 +740,81 @@ describe("applyAgentConfig builtin override protection", () => {
 
       // then
       expect(result["shared-name"]).toBeDefined()
+      expect(result["shared-name"]?.prompt).toBe("from-config")
+    })
+
+    test("precedence: custom agent sources resolve from lowest to highest priority", async () => {
+      // given
+      const pluginComponents = createPluginComponents()
+      pluginComponents.agents = {
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-plugin",
+          mode: "subagent",
+        },
+      }
+      loadUserAgentsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-user",
+          mode: "subagent",
+        },
+      })
+      loadOpencodeGlobalAgentsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-opencode-global",
+          mode: "subagent",
+        },
+      })
+      loadProjectAgentsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-project",
+          mode: "subagent",
+        },
+      })
+      loadOpencodeProjectAgentsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-opencode-project",
+          mode: "subagent",
+        },
+      })
+      loadAgentDefinitionsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-definitions",
+          mode: "subagent",
+        },
+      })
+      readOpencodeConfigAgentsSpy.mockReturnValue({
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-opencode-config",
+          mode: "subagent",
+        },
+      })
+      const config = createBaseConfig()
+      ;(config as Record<string, unknown>).agent = {
+        "shared-name": {
+          name: "shared-name",
+          prompt: "from-config",
+          mode: "subagent",
+        },
+      }
+      const pluginConfig = createPluginConfig()
+      pluginConfig.agent_definitions = ["/fake/path/agent.md"]
+
+      // when
+      const result = await applyAgentConfig({
+        config,
+        pluginConfig,
+        ctx: { directory: "/tmp" },
+        pluginComponents,
+      })
+
+      // then
       expect(result["shared-name"]?.prompt).toBe("from-config")
     })
 

@@ -61,8 +61,12 @@ function isFalsy(value: string | undefined): boolean {
   return value === "0" || value === "false" || value === "no"
 }
 
+function isTruthy(value: string | undefined): boolean {
+  return value === "1" || value === "true" || value === "yes"
+}
+
 function shouldDisablePostHog(): boolean {
-  if (process.env.OMO_DISABLE_POSTHOG === "true" || process.env.OMO_DISABLE_POSTHOG === "1") {
+  if (isTruthy(process.env.OMO_DISABLE_POSTHOG?.trim().toLowerCase())) {
     return true
   }
 
@@ -85,7 +89,10 @@ function safeCpus(): { length: number; model: string | undefined } {
   try {
     const cpus = resolveOsProvider().cpus()
     return { length: cpus.length, model: cpus[0]?.model }
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error
+    }
     return { length: 0, model: undefined }
   }
 }
@@ -133,7 +140,10 @@ function createPostHogClient(
       host: getPostHogHost(),
       disableGeoip: false,
     })
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error
+    }
     return NO_OP_POSTHOG
   }
   const sharedProperties = getSharedProperties(source)

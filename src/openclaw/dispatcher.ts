@@ -22,9 +22,7 @@ export function shellEscapeArg(value: string): string {
 
 export function resolveCommandTimeoutMs(
   gatewayTimeout?: number,
-  envTimeoutRaw =
-    process.env.OMO_OPENCLAW_COMMAND_TIMEOUT_MS
-    ?? process.env.OMX_OPENCLAW_COMMAND_TIMEOUT_MS,
+  envTimeoutRaw = process.env.OMO_OPENCLAW_COMMAND_TIMEOUT_MS,
 ): number {
   const parseFinite = (value: unknown): number | undefined => {
     if (typeof value !== "number" || !Number.isFinite(value)) return undefined
@@ -96,7 +94,8 @@ function parseWakeMetadata(raw: string): Pick<WakeResult, "messageId" | "platfor
   if (!trimmed) return {}
   try {
     return extractWakeMetadata(JSON.parse(trimmed))
-  } catch {
+  } catch (parseError) {
+    if (!(parseError instanceof Error)) return {}
     const messageId = trimmed.match(/message\s+id:\s*([^\s]+)/i)?.[1]
     const platform = trimmed.match(/sent\s+via\s+([a-z0-9_-]+)/i)?.[1]?.toLowerCase()
     return {
@@ -233,12 +232,21 @@ export function terminateCommandProcess(proc: KillableProcess, signal: NodeJS.Si
       try {
         process.kill(-proc.pid, signal)
         return
-      } catch {
+      } catch (groupKillError) {
+        if (groupKillError instanceof Error) {
+          proc.kill(signal)
+          return
+        }
         proc.kill(signal)
         return
       }
     }
 
     proc.kill(signal)
-  } catch {}
+  } catch (directKillError) {
+    if (directKillError instanceof Error) {
+      return
+    }
+    return
+  }
 }

@@ -5,7 +5,7 @@ import { publishToolMetadata } from "../../features/tool-metadata-store"
 import { getTaskToastManager } from "../../features/task-toast-manager"
 import { getAgentToolRestrictions } from "../../shared/agent-tool-restrictions"
 import { getMessageDir, normalizeSDKResponse } from "../../shared"
-import { promptSyncWithModelSuggestionRetry } from "../../shared/model-suggestion-retry"
+import { promptWithModelSuggestionRetry } from "../../shared/model-suggestion-retry"
 import { resolveMessageContext } from "../../features/hook-message-injector"
 import { formatDuration } from "./time-formatter"
 import { syncContinuationDeps, type SyncContinuationDeps } from "./sync-continuation-deps"
@@ -73,7 +73,8 @@ async function resolveResumeContext(
     }
 
     return { anchorMessageCount: messages.length }
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) throw error
     const resumeMessageDir = getMessageDir(continuationID)
     const { prevMessage } = await resolveMessageContext(continuationID, client, resumeMessageDir)
     const resumeMessageModel = prevMessage?.model
@@ -160,7 +161,7 @@ export async function executeSyncContinuation(
     }
     setSessionTools(continuationID, tools)
 
-    await promptSyncWithModelSuggestionRetry(client, {
+    await promptWithModelSuggestionRetry(client, {
       path: { id: continuationID },
       body: {
         ...(resumeAgent !== undefined ? { agent: resumeAgent } : {}),
@@ -172,6 +173,7 @@ export async function executeSyncContinuation(
       },
     }, {
       queueBehavior: "defer",
+      checkToolState: false,
     })
    } catch (promptError) {
      if (toastManager) {

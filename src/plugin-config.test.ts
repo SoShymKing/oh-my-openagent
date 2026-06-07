@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadConfigFromPath, mergeConfigs, parseConfigPartially } from "./plugin-config";
 import { OhMyOpenCodeConfigSchema, type OhMyOpenCodeConfig, type TeamModeConfig } from "./config";
 import { clearConfigLoadErrors, getConfigLoadErrors } from "./shared/config-errors";
+import { resolveSymlink } from "./shared/file-utils"
 
 const tempDirs: string[] = []
 type ConfigInput = Omit<Partial<OhMyOpenCodeConfig>, "team_mode"> & {
@@ -240,6 +241,20 @@ describe("mergeConfigs", () => {
         "anthropic",
       ]);
     });
+
+    it("should replace mcp_env_allowlist instead of merging it", () => {
+      const base = createConfig({
+        mcp_env_allowlist: ["USER_ONLY_TOKEN"],
+      });
+
+      const override = createConfig({
+        mcp_env_allowlist: ["PROJECT_TOKEN"],
+      });
+
+      const result = mergeConfigs(base, override);
+
+      expect(result.mcp_env_allowlist).toEqual(["PROJECT_TOKEN"]);
+    });
   });
 });
 
@@ -279,9 +294,9 @@ describe("parseConfigPartially", () => {
       const result = parseConfigPartially(rawConfig);
 
       expect(result).not.toBeNull();
-      expect(result!.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
-      expect(result!.agents?.momus).toMatchObject({ model: "openai/gpt-5.4" });
-      expect(result!.disabled_hooks).toEqual(["comment-checker"]);
+      expect(result?.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
+      expect(result?.agents?.momus).toMatchObject({ model: "openai/gpt-5.4" });
+      expect(result?.disabled_hooks).toEqual(["comment-checker"]);
     });
   });
 
@@ -307,8 +322,8 @@ describe("parseConfigPartially", () => {
       const result = parseConfigPartially(rawConfig);
 
       expect(result).not.toBeNull();
-      expect(result!.disabled_hooks).toEqual(["comment-checker"]);
-      expect(result!.agents).toBeUndefined();
+      expect(result?.disabled_hooks).toEqual(["comment-checker"]);
+      expect(result?.agents).toBeUndefined();
     });
 
     it("should preserve valid agent_order when another section is invalid", () => {
@@ -351,8 +366,25 @@ describe("parseConfigPartially", () => {
       const result = parseConfigPartially(rawConfig);
 
       expect(result).not.toBeNull();
-      expect(result!.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
-      expect(result!.disabled_hooks).toEqual(["not-a-real-hook"]);
+      expect(result?.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
+      expect(result?.disabled_hooks).toEqual(["not-a-real-hook"]);
+    });
+
+    it("should skip invalid string-array sections without discarding other salvaged sections", () => {
+      const rawConfig = {
+        agents: {
+          oracle: { temperature: "not-a-number" },
+        },
+        disabled_hooks: ["comment-checker"],
+        mcp_env_allowlist: ["USER_TOKEN", 42],
+      };
+
+      const result = parseConfigPartially(rawConfig);
+
+      expect(result).not.toBeNull();
+      expect(result?.agents).toBeUndefined();
+      expect(result?.disabled_hooks).toEqual(["comment-checker"]);
+      expect(result?.mcp_env_allowlist).toBeUndefined();
     });
   });
 
@@ -370,8 +402,8 @@ describe("parseConfigPartially", () => {
       const result = parseConfigPartially(rawConfig);
 
       expect(result).not.toBeNull();
-      expect(result!.agents).toBeUndefined();
-      expect(result!.disabled_hooks).toEqual(["not-a-real-hook"]);
+      expect(result?.agents).toBeUndefined();
+      expect(result?.disabled_hooks).toEqual(["not-a-real-hook"]);
     });
   });
 
@@ -410,7 +442,7 @@ describe("parseConfigPartially", () => {
       const result = parseConfigPartially(rawConfig);
 
       expect(result).not.toBeNull();
-      expect(result!.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
+      expect(result?.agents?.oracle).toMatchObject({ model: "openai/gpt-5.5" });
       expect((result as Record<string, unknown>)["some_future_key"]).toBeUndefined();
     });
   });
@@ -589,6 +621,37 @@ describe("loadPluginConfig", () => {
     expect(existsSync(legacyConfigPath)).toBe(false)
     expect(existsSync(canonicalConfigPath)).toBe(true)
     expect(config.agents?.oracle?.model).toBe("openai/gpt-5.5")
+  })
+
+  it("does not rewrite explicit user-selected openai/gpt-5.4 models during config load", async () => {
+    // given
+    const { userConfigDir, projectDir } =
+      createLoadPluginConfigTestContext("omo-plugin-config-preserve-user-model-")
+    const userConfigPath = join(userConfigDir, "oh-my-openagent.json")
+    writeJsonFile(userConfigPath, {
+      agents: {
+        sisyphus: {
+          model: "openai/gpt-5.4",
+          variant: "xhigh",
+        },
+        hephaestus: {
+          model: "openai/gpt-5.4",
+          variant: "medium",
+        },
+      },
+    })
+
+    process.env.OPENCODE_CONFIG_DIR = userConfigDir
+
+    // when
+    const { loadPluginConfig } = await importFreshPluginConfigModule()
+    const config = loadPluginConfig(projectDir, {})
+
+    // then
+    expect(config.agents?.sisyphus?.model).toBe("openai/gpt-5.4")
+    expect(config.agents?.hephaestus?.model).toBe("openai/gpt-5.4")
+    expect(readFileSync(userConfigPath, "utf-8")).toContain('"openai/gpt-5.4"')
+    expect(existsSync(`${userConfigPath}.migrations.json`)).toBe(false)
   })
 
   it("should preserve explicit user git_master settings when project config omits git_master", async () => {
@@ -1066,10 +1129,12 @@ describe("loadPluginConfig", () => {
       join(workDir, ".opencode", "oh-my-openagent.jsonc"),
       JSON.stringify({ agent_definitions: [workDefRelativePath] })
     )
+    writeFileSync(join(workDir, ".opencode", "work-agent.md"), "# Work Agent")
     writeFileSync(
       join(projectDir, ".opencode", "oh-my-openagent.jsonc"),
       JSON.stringify({ agent_definitions: [projectDefRelativePath] })
     )
+    writeFileSync(join(projectDir, ".opencode", "project-agent.md"), "# Project Agent")
 
     process.env.OPENCODE_CONFIG_DIR = userConfigDir
     process.env.HOME = homeDir
@@ -1077,10 +1142,11 @@ describe("loadPluginConfig", () => {
     // when
     const { loadPluginConfig } = await importFreshPluginConfigModule()
     const config = loadPluginConfig(projectDir, {})
+    const resolvedAgentDefinitions = config.agent_definitions.map(resolveSymlink)
 
     // then each ancestor's relative path resolves against its own .opencode/
-    expect(config.agent_definitions).toContain(join(realpathSync(workDir), ".opencode", "work-agent.md"))
-    expect(config.agent_definitions).toContain(join(realpathSync(projectDir), ".opencode", "project-agent.md"))
+    expect(resolvedAgentDefinitions).toContain(join(resolveSymlink(workDir), ".opencode", "work-agent.md"))
+    expect(resolvedAgentDefinitions).toContain(join(resolveSymlink(projectDir), ".opencode", "project-agent.md"))
   })
 
   it("should migrate legacy basenames found in ancestor directories", async () => {

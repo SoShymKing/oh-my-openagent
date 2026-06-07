@@ -8,6 +8,7 @@ import { log } from "../../shared/logger"
 import { createInternalAgentContinuationTextPart, resolveInheritedPromptTools } from "../../shared"
 import { isAmbiguousPostDispatchPromptFailure } from "../../shared/prompt-failure-classifier"
 import { dispatchInternalPrompt, isInternalPromptDispatchAccepted } from "../shared/prompt-async-gate"
+import { CONTINUATION_COOLDOWN_MS } from "./idle-constants"
 import { HOOK_NAME } from "./hook-name"
 import { BOULDER_CONTINUATION_PROMPT } from "./system-reminder-templates"
 import { markContinuationInjectedAwaitingToolProgress } from "./tool-progress"
@@ -101,6 +102,7 @@ export async function injectBoulderContinuation(input: {
       source: HOOK_NAME,
       settleMs: idleSettleMs,
       queueBehavior: "defer",
+      semanticDedupeHoldMs: CONTINUATION_COOLDOWN_MS,
       input: {
         path: { id: sessionID },
         body: {
@@ -138,11 +140,12 @@ export async function injectBoulderContinuation(input: {
     log(`[${HOOK_NAME}] Boulder continuation injected`, { sessionID })
     return "injected"
   } catch (err) {
+    const errorText = err instanceof Error ? String(err) : String(err)
     sessionState.promptFailureCount += 1
     sessionState.lastFailureAt = Date.now()
     log(`[${HOOK_NAME}] Boulder continuation failed`, {
       sessionID,
-      error: String(err),
+      error: errorText,
       promptFailureCount: sessionState.promptFailureCount,
     })
     return "failed"

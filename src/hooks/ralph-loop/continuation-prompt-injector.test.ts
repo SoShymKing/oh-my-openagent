@@ -36,6 +36,36 @@ describe("ralph-loop continuation prompt injector", () => {
     }
   })
 
+  test("#given promptAsync resolves circular SDK error #when injecting continuation prompt #then it returns rejection without throwing", async () => {
+    // given
+    const circularError: Record<string, unknown> = {}
+    circularError.self = circularError
+    const ctx = {
+      client: {
+        session: {
+          messages: async () => ({ data: [] }),
+          promptAsync: async () => ({
+            error: circularError,
+          }),
+        },
+      },
+    }
+
+    // when
+    const result = await injectContinuationPrompt(ctx as never, {
+      sessionID: "ses_rejected_circular_response",
+      prompt: "continue",
+      directory: "/tmp/test",
+      apiTimeoutMs: 50,
+    })
+
+    // then
+    expect(result.status).toBe("rejected")
+    if (result.status === "rejected") {
+      expect(String(result.error)).toContain("[object Object]")
+    }
+  })
+
   test("#given promptAsync rejects #when injecting continuation prompt #then it returns rejection without throwing", async () => {
     // given
     const ctx = {
@@ -87,6 +117,36 @@ describe("ralph-loop continuation prompt injector", () => {
 
     // then
     expect(result.status).toBe("dispatched")
+  })
+
+  test("#given inherited message lookup fails #when latest assistant state cannot be inspected #then continuation is deferred", async () => {
+    // given
+    let promptCalls = 0
+    const ctx = {
+      client: {
+        session: {
+          messages: async () => {
+            throw new Error("messages unavailable")
+          },
+          promptAsync: async () => {
+            promptCalls += 1
+            return {}
+          },
+        },
+      },
+    }
+
+    // when
+    const result = await injectContinuationPrompt(ctx as never, {
+      sessionID: "ses_ralph_message_lookup_failed",
+      prompt: "continue",
+      directory: "/tmp/test",
+      apiTimeoutMs: 50,
+    })
+
+    // then
+    expect(result).toEqual({ status: "deferred", reason: "active" })
+    expect(promptCalls).toBe(0)
   })
 
 
@@ -180,7 +240,7 @@ describe("ralph-loop continuation prompt injector", () => {
       | undefined
     const model = {
       providerID: "openai",
-      modelID: "gpt-5.3-codex",
+      modelID: "gpt-5.5",
       variant: "max",
     }
     const ctx = {
@@ -213,7 +273,7 @@ describe("ralph-loop continuation prompt injector", () => {
     // then
     expect(promptBody?.model).toEqual({
       providerID: "openai",
-      modelID: "gpt-5.3-codex",
+      modelID: "gpt-5.5",
     })
     expect(promptBody?.variant).toBe("max")
   })

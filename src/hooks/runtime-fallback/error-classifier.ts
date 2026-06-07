@@ -33,7 +33,10 @@ export function getErrorMessage(error: unknown): string {
 
   try {
     return JSON.stringify(error).toLowerCase()
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error
+    }
     return ""
   }
 }
@@ -175,6 +178,7 @@ export function classifyErrorType(error: unknown): string | undefined {
     /payment.?required/i.test(message) ||
     /usage\s+limit/i.test(message) ||
     /credit\s+balance.*too\s+low/i.test(message) ||
+    /limit\s+exhausted/i.test(message) ||
     /使用上限/.test(message) ||
     /达到.*限制/.test(message) ||
     /额度.*不足/.test(message) ||

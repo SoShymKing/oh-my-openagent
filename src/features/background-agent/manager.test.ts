@@ -885,7 +885,7 @@ describe("BackgroundManager retry observability", () => {
     expect(notification).toContain("[BACKGROUND TASK RETRYING]")
     expect(notification).toContain("ses_retry_visibility")
     expect(notification).toContain("genai-proxy-openai/gpt-5.4-mini")
-    expect(notification).toContain("anthropic/claude-haiku-4.5")
+    expect(notification).toContain("anthropic/claude-haiku-4-5")
   })
 
   test("falls back to task parent agent when retrying wake cannot load parent messages", async () => {
@@ -2714,6 +2714,39 @@ describe("BackgroundManager.resume concurrency key", () => {
     expect(concurrencyManager.getCount("external-key")).toBe(1)
     expect(task.concurrencyKey).toBe("external-key")
   })
+
+  test("should re-acquire persisted model group using provider concurrency key", async () => {
+    // given
+    manager.shutdown()
+    manager = createBackgroundManagerWithOptions({
+      config: { providerConcurrency: { anthropic: 1 } },
+    })
+    stubNotifyParentSession(manager)
+    const task = await manager.trackTask({
+      taskId: "task-1",
+      sessionId: "session-1",
+      parentSessionId: "parent-session",
+      description: "external task",
+      agent: "task",
+      concurrencyKey: "anthropic/claude-sonnet-4-6",
+    })
+
+    await tryCompleteTaskForTest(manager, task)
+    task.concurrencyGroup = "anthropic/claude-sonnet-4-6"
+
+    // when
+    await manager.resume({
+      sessionId: "session-1",
+      prompt: "resume",
+      parentSessionId: "parent-session-2",
+      parentMessageId: "msg-2",
+    })
+
+    // then
+    const concurrencyManager = getConcurrencyManager(manager)
+    expect(concurrencyManager.getCount("anthropic")).toBe(1)
+    expect(task.concurrencyKey).toBe("anthropic")
+  })
 })
 
 describe("BackgroundManager.resume promptAsync gate state", () => {
@@ -4398,6 +4431,140 @@ describe("BackgroundManager - Non-blocking Queue Integration", () => {
       expect(updatedTask1?.status).toBe("running")
       expect(updatedTask2?.status).toBe("running")
     })
+
+    test("should respect provider concurrency across different models on the same provider", async () => {
+      // given
+      const config = { providerConcurrency: { anthropic: 1 } }
+      manager.shutdown()
+      manager = new BackgroundManager({ pluginContext: createPluginInput(mockClient), config: config })
+
+      const input1 = {
+        description: "Task 1",
+        prompt: "Do something",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-opus-4.7" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      const input2 = {
+        description: "Task 2",
+        prompt: "Do something else",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4.6" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      // when
+      const task1 = await manager.launch(input1)
+      const task2 = await manager.launch(input2)
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      // then
+      const updatedTask1 = manager.getTask(task1.id)
+      const updatedTask2 = manager.getTask(task2.id)
+
+      expect(updatedTask1?.status).toBe("running")
+      expect(updatedTask2?.status).toBe("pending")
+      expect(updatedTask1?.concurrencyKey).toBe("anthropic")
+      expect(updatedTask2?.concurrencyKey).toBeUndefined()
+    })
+
+    test("should resolve limits from raw model keys while queueing by provider key", async () => {
+      // given
+      const config = {
+        modelConcurrency: { anthropic: 99 },
+        providerConcurrency: { anthropic: 1 },
+      }
+      manager.shutdown()
+      manager = new BackgroundManager({ pluginContext: createPluginInput(mockClient), config })
+
+      const input1 = {
+        description: "Task 1",
+        prompt: "Do something",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-opus-4.7" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      const input2 = {
+        description: "Task 2",
+        prompt: "Do something else",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4.6" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      // when
+      const task1 = await manager.launch(input1)
+      const task2 = await manager.launch(input2)
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      // then
+      const updatedTask1 = manager.getTask(task1.id)
+      const updatedTask2 = manager.getTask(task2.id)
+      const concurrencyManager = getConcurrencyManager(manager)
+
+      expect(updatedTask1?.status).toBe("running")
+      expect(updatedTask2?.status).toBe("pending")
+      expect(updatedTask1?.concurrencyKey).toBe("anthropic")
+      expect(updatedTask2?.concurrencyKey).toBeUndefined()
+      expect(concurrencyManager.getCount("anthropic")).toBe(1)
+      expect(concurrencyManager.getQueueLength("anthropic")).toBe(1)
+    })
+
+    test("should remove cancelled pending model task from provider queue", async () => {
+      // given
+      const config = { providerConcurrency: { anthropic: 1 } }
+      manager.shutdown()
+      manager = new BackgroundManager({ pluginContext: createPluginInput(mockClient), config })
+
+      const input1 = {
+        description: "Task 1",
+        prompt: "Do something",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-opus-4.7" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      const input2 = {
+        description: "Task 2",
+        prompt: "Do something else",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4.6" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      const input3 = {
+        description: "Task 3",
+        prompt: "Do a third thing",
+        agent: "test-agent",
+        model: { providerID: "anthropic", modelID: "claude-haiku-4.5" },
+        parentSessionId: "parent-session",
+        parentMessageId: "parent-message",
+      }
+
+      await manager.launch(input1)
+      await manager.launch(input2)
+      const task3 = await manager.launch(input3)
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      // when
+      const cancelled = await manager.cancelTask(task3.id, { abortSession: false, skipNotification: true })
+
+      // then
+      const providerQueue = getQueuesByKey(manager).get("anthropic")
+      const providerQueuedTaskIds = providerQueue?.map(item => item.task.id) ?? []
+      expect(cancelled).toBe(true)
+      expect(providerQueuedTaskIds).not.toContain(task3.id)
+      expect(getQueuesByKey(manager).get("anthropic/claude-haiku-4.5")).toBeUndefined()
+      expect(manager.getTask(task3.id)?.status).toBe("cancelled")
+    })
   })
 
   describe("TTL uses queuedAt for pending, startedAt for running", () => {
@@ -5355,7 +5522,7 @@ describe("BackgroundManager.handleEvent - session.deleted cascade", () => {
 describe("BackgroundManager.handleEvent - session.error", () => {
   const defaultRetryFallbackChain = [
     { providers: ["anthropic"], model: "claude-opus-4-7", variant: "max" },
-    { providers: ["anthropic"], model: "gpt-5.3-codex", variant: "high" },
+    { providers: ["anthropic"], model: "gpt-5.5", variant: "high" },
   ]
 
   let logCalls: Array<{ message: string; data?: unknown }> = []
@@ -5643,6 +5810,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     const client = {
       session: {
         status: async () => ({ data: { "parent-session-wake": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
         promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
           promptCalls.push(args)
           return {}
@@ -5699,6 +5867,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     const client = {
       session: {
         status: async () => ({ data: { "parent-session-alias": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
         promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
           promptCalls.push(args)
           return {}
@@ -5736,7 +5905,266 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     resetClaudeCodeSessionState()
   })
 
-  test("does not requeue dispatched parent wake when session.error arrives before accepted history is visible", async () => {
+  test("keeps dispatched parent wake tracked when message.updated only records the injected user wake", async () => {
+    //#given
+    const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
+    const notification = "<system-reminder>done</system-reminder>"
+    const client = {
+      session: {
+        status: async () => ({ data: { "parent-session-user-update": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
+        promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
+          promptCalls.push(args)
+          return {}
+        },
+        abort: async () => ({}),
+      },
+    }
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const managerInternals = cast<{
+      queuePendingParentWake: (
+        sessionID: string,
+        notification: string,
+        promptContext: Record<string, unknown>,
+        shouldReply: boolean,
+        delayMs?: number,
+      ) => void
+      flushPendingParentWake: (sessionID: string) => Promise<void>
+    }>(manager)
+    managerInternals.queuePendingParentWake(
+      "parent-session-user-update",
+      notification,
+      { agent: "sisyphus" },
+      true,
+      0,
+    )
+    await managerInternals.flushPendingParentWake("parent-session-user-update")
+
+    //#when
+    manager.handleEvent({
+      type: "message.updated",
+      properties: {
+        info: {
+          sessionID: "parent-session-user-update",
+          role: "user",
+        },
+      },
+    })
+
+    //#then
+    expect(promptCalls).toHaveLength(1)
+    expect(getDispatchedParentWakes(manager).has("parent-session-user-update")).toBe(true)
+
+    manager.shutdown()
+  })
+
+  test("requeues dispatched parent wake when a late error follows the injected user wake part", async () => {
+    //#given
+    const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
+    const notification = "<system-reminder>done</system-reminder>"
+    const client = {
+      session: {
+        status: async () => ({ data: { "parent-session-part-wake": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
+        promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
+          promptCalls.push(args)
+          return {}
+        },
+        abort: async () => ({}),
+      },
+    }
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const managerInternals = cast<{
+      queuePendingParentWake: (
+        sessionID: string,
+        notification: string,
+        promptContext: Record<string, unknown>,
+        shouldReply: boolean,
+        delayMs?: number,
+      ) => void
+      flushPendingParentWake: (sessionID: string) => Promise<void>
+    }>(manager)
+    managerInternals.queuePendingParentWake(
+      "parent-session-part-wake",
+      notification,
+      { agent: "sisyphus" },
+      true,
+      0,
+    )
+    await managerInternals.flushPendingParentWake("parent-session-part-wake")
+    expect(getDispatchedParentWakes(manager).has("parent-session-part-wake")).toBe(true)
+
+    //#when
+    manager.handleEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "parent-session-part-wake",
+        part: {
+          sessionID: "parent-session-part-wake",
+          type: "text",
+          text: `${notification}\n<!-- OMO_INTERNAL_INITIATOR -->`,
+        },
+      },
+    })
+    expect(getDispatchedParentWakes(manager).has("parent-session-part-wake")).toBe(true)
+    manager.handleEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "parent-session-part-wake",
+        error: { name: "UnknownError", message: "late provider failure" },
+      },
+    })
+    await waitForParentWakeErrorSettle()
+
+    //#then
+    expect(promptCalls).toHaveLength(1)
+    expect(getDispatchedParentWakes(manager).has("parent-session-part-wake")).toBe(false)
+    expect(getPendingParentWakes(manager).get("parent-session-part-wake")?.notifications).toEqual([notification])
+
+    manager.shutdown()
+  })
+
+  test("requeues dispatched parent wake when split text deltas stream the injected user wake", async () => {
+    //#given
+    const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
+    const notification = "<system-reminder>done</system-reminder>"
+    const client = {
+      session: {
+        status: async () => ({ data: { "parent-session-delta-wake": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
+        promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
+          promptCalls.push(args)
+          return {}
+        },
+        abort: async () => ({}),
+      },
+    }
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const managerInternals = cast<{
+      queuePendingParentWake: (
+        sessionID: string,
+        notification: string,
+        promptContext: Record<string, unknown>,
+        shouldReply: boolean,
+        delayMs?: number,
+      ) => void
+      flushPendingParentWake: (sessionID: string) => Promise<void>
+    }>(manager)
+    managerInternals.queuePendingParentWake(
+      "parent-session-delta-wake",
+      notification,
+      { agent: "sisyphus" },
+      true,
+      0,
+    )
+    await managerInternals.flushPendingParentWake("parent-session-delta-wake")
+    expect(getDispatchedParentWakes(manager).has("parent-session-delta-wake")).toBe(true)
+
+    //#when
+    manager.handleEvent({
+      type: "message.part.delta",
+      properties: {
+        sessionID: "parent-session-delta-wake",
+        messageID: "message-delta-wake",
+        partID: "part-delta-wake",
+        field: "text",
+        delta: notification,
+      },
+    })
+    expect(getDispatchedParentWakes(manager).has("parent-session-delta-wake")).toBe(true)
+    manager.handleEvent({
+      type: "message.part.delta",
+      properties: {
+        sessionID: "parent-session-delta-wake",
+        messageID: "message-delta-wake",
+        partID: "part-delta-wake",
+        field: "text",
+        delta: "\n<!-- OMO_INTERNAL_INITIATOR -->",
+      },
+    })
+    expect(getDispatchedParentWakes(manager).has("parent-session-delta-wake")).toBe(true)
+    manager.handleEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "parent-session-delta-wake",
+        error: { name: "UnknownError", message: "late provider failure" },
+      },
+    })
+    await waitForParentWakeErrorSettle()
+
+    //#then
+    expect(promptCalls).toHaveLength(1)
+    expect(getDispatchedParentWakes(manager).has("parent-session-delta-wake")).toBe(false)
+    expect(getPendingParentWakes(manager).get("parent-session-delta-wake")?.notifications).toEqual([notification])
+
+    manager.shutdown()
+  })
+
+  test("does not requeue dispatched parent wake after real assistant text delta output", async () => {
+    //#given
+    const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
+    const notification = "<system-reminder>done</system-reminder>"
+    const client = {
+      session: {
+        status: async () => ({ data: { "parent-session-real-delta": { type: "idle" } } }),
+        messages: async () => ({ data: [] }),
+        promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> }) => {
+          promptCalls.push(args)
+          return {}
+        },
+        abort: async () => ({}),
+      },
+    }
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const managerInternals = cast<{
+      queuePendingParentWake: (
+        sessionID: string,
+        notification: string,
+        promptContext: Record<string, unknown>,
+        shouldReply: boolean,
+        delayMs?: number,
+      ) => void
+      flushPendingParentWake: (sessionID: string) => Promise<void>
+    }>(manager)
+    managerInternals.queuePendingParentWake(
+      "parent-session-real-delta",
+      notification,
+      { agent: "sisyphus" },
+      true,
+      0,
+    )
+    await managerInternals.flushPendingParentWake("parent-session-real-delta")
+    expect(getDispatchedParentWakes(manager).has("parent-session-real-delta")).toBe(true)
+
+    //#when
+    manager.handleEvent({
+      type: "message.part.delta",
+      properties: {
+        sessionID: "parent-session-real-delta",
+        messageID: "message-real-delta",
+        partID: "part-real-delta",
+        field: "text",
+        delta: "actual assistant output",
+      },
+    })
+    expect(getDispatchedParentWakes(manager).has("parent-session-real-delta")).toBe(false)
+    manager.handleEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "parent-session-real-delta",
+        error: { name: "UnknownError", message: "late provider failure" },
+      },
+    })
+    await waitForParentWakeErrorSettle()
+
+    //#then
+    expect(promptCalls).toHaveLength(1)
+    expect(getPendingParentWakes(manager).has("parent-session-real-delta")).toBe(false)
+
+    manager.shutdown()
+  })
+
+  test("requeues dispatched parent wake when session.error arrives with only the injected user wake visible", async () => {
     //#given
     const promptCalls: Array<{ path: { id: string }; body: Record<string, unknown> }> = []
     const notification = "<system-reminder>done</system-reminder>"
@@ -5799,7 +6227,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     //#then
     expect(promptCalls).toHaveLength(1)
     expect(getDispatchedParentWakes(manager).has("parent-session-wake")).toBe(false)
-    expect(getPendingParentWakes(manager).has("parent-session-wake")).toBe(false)
+    expect(getPendingParentWakes(manager).get("parent-session-wake")?.notifications).toEqual([notification])
 
     manager.shutdown()
   })
@@ -6116,7 +6544,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     expect(task.attemptCount).toBe(1)
     expect(task.model).toEqual({
       providerID: "anthropic",
-      modelID: "claude-opus-4.7",
+      modelID: "claude-opus-4-7",
       variant: "max",
     })
     expect(task.concurrencyKey).toBeUndefined()
@@ -6154,7 +6582,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     expect(task.attemptCount).toBe(1)
     expect(task.model).toEqual({
       providerID: "anthropic",
-      modelID: "claude-opus-4.7",
+      modelID: "claude-opus-4-7",
       variant: "max",
     })
 
@@ -6199,7 +6627,7 @@ describe("BackgroundManager.handleEvent - session.error", () => {
     expect(task.attemptCount).toBe(1)
     expect(task.model).toEqual({
       providerID: "anthropic",
-      modelID: "claude-opus-4.7",
+      modelID: "claude-opus-4-7",
       variant: "max",
     })
 

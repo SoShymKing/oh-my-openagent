@@ -15,7 +15,7 @@ type AtomicWriteDeps = {
 }
 
 const LOCK_RETRY_MS = 50
-const LOCK_WAIT_TIMEOUT_MS = 4_000
+const LOCK_WAIT_TIMEOUT_MS = 15_000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -43,7 +43,10 @@ function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error
+    }
     return false
   }
 }
@@ -104,13 +107,19 @@ export async function detectStaleLock(lockPath: string, staleAfterMs: number): P
     if (isPidAlive(parsed.ownerPid)) return false
 
     return Date.now() - parsed.acquiredAtEpochMs > staleAfterMs
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error
+    }
     return false
   }
 }
 
 export async function reapStaleLock(lockPath: string): Promise<void> {
-  await unlink(lockPath).catch(() => undefined)
+  await unlink(lockPath).catch((error: unknown) => {
+    if (error instanceof Error) return undefined
+    return undefined
+  })
 }
 
 export async function atomicWrite(

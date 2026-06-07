@@ -1,13 +1,41 @@
 import type { AgentConfig } from "@opencode-ai/sdk";
 
-export {
+import {
   isClaudeOpus47Model,
+  isClaudeOpus47OrLaterModel,
   isGeminiModel,
   isGlmModel,
   isGptModel,
   isKimiK2Model,
   isMiniMaxModel,
 } from "@oh-my-opencode/model-core";
+
+export {
+  isClaudeOpus47Model,
+  isClaudeOpus47OrLaterModel,
+  isGeminiModel,
+  isGlmModel,
+  isGptModel,
+  isKimiK2Model,
+  isMiniMaxModel,
+};
+
+const CLAUDE_THINKING_BUDGET_TOKENS = 32000;
+
+/**
+ * Anthropic Opus 4.7+ rejects thinking.type "enabled"; it requires adaptive
+ * thinking plus an effort, which OpenCode core derives from the model variant.
+ * For those models emit no thinking config and let core drive it (issue #4614).
+ * All other Claude models keep the explicit enabled-thinking budget.
+ */
+export function buildClaudeThinkingConfig(
+  model: string,
+): { thinking: { type: "enabled"; budgetTokens: number } } | Record<string, never> {
+  if (isClaudeOpus47OrLaterModel(model)) {
+    return {};
+  }
+  return { thinking: { type: "enabled", budgetTokens: CLAUDE_THINKING_BUDGET_TOKENS } };
+}
 
 /**
  * Agent mode determines UI model selection behavior:
@@ -93,16 +121,6 @@ export function isGptNativeSisyphusModel(model: string): boolean {
 export function isGpt5_5Model(model: string): boolean {
   const modelName = extractModelName(model).toLowerCase();
   return modelName.includes("gpt-5.5") || modelName.includes("gpt-5-5");
-}
-
-export function isGpt5_3CodexModel(model: string): boolean {
-  const modelName = extractModelName(model).toLowerCase();
-  return modelName.includes("gpt-5.3-codex") || modelName.includes("gpt-5-3-codex");
-}
-
-export function isGpt5_2Model(model: string): boolean {
-  const modelName = extractModelName(model).toLowerCase();
-  return modelName.includes("gpt-5.2") || modelName.includes("gpt-5-2");
 }
 
 export type BuiltinAgentName =

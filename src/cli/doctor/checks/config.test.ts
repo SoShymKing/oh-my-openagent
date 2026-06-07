@@ -4,6 +4,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as config from "./config"
 
+function normalizePathForAssertion(filePath: string): string {
+  return filePath.replaceAll("\\", "/").replaceAll("/private/var/", "/var/")
+}
+
 describe("config check", () => {
   describe("checkConfig", () => {
     it("returns a valid CheckResult", async () => {
@@ -45,7 +49,9 @@ describe("config check", () => {
 
         const result = await config.checkConfig()
 
-        expect(result.details?.[0]).toEndWith("/oh-my-openagent.json")
+        expect(normalizePathForAssertion(result.details?.[0] ?? "")).toContain(
+          normalizePathForAssertion(join(testConfigDir, "oh-my-openagent.json")),
+        )
       } finally {
         rmSync(testConfigDir, { recursive: true, force: true })
         if (originalConfigDir === undefined) {
@@ -122,6 +128,42 @@ describe("config check", () => {
           delete process.env.XDG_CACHE_HOME
         } else {
           process.env.XDG_CACHE_HOME = originalXdgCache
+        }
+      }
+    })
+
+    // regression: issue #4165 — doctor used to falsely flag reasoningEffort: "max"
+    // as an "Invalid configuration" error even though the schema and runtime accept it.
+    it("does not flag reasoningEffort: 'max' as an invalid configuration", async () => {
+      const originalConfigDir = process.env.OPENCODE_CONFIG_DIR
+      const testConfigDir = join(
+        tmpdir(),
+        `omo-doctor-reasoning-effort-max-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      )
+
+      try {
+        mkdirSync(testConfigDir, { recursive: true })
+        process.env.OPENCODE_CONFIG_DIR = testConfigDir
+        writeFileSync(
+          join(testConfigDir, "oh-my-openagent.json"),
+          JSON.stringify({
+            agents: {
+              sisyphus: { reasoningEffort: "max" },
+            },
+          }, null, 2) + "\n",
+          "utf-8",
+        )
+
+        const result = await config.checkConfig()
+        const invalidConfig = result.issues.find((issue) => issue.title === "Invalid configuration")
+
+        expect(invalidConfig).toBeUndefined()
+      } finally {
+        rmSync(testConfigDir, { recursive: true, force: true })
+        if (originalConfigDir === undefined) {
+          delete process.env.OPENCODE_CONFIG_DIR
+        } else {
+          process.env.OPENCODE_CONFIG_DIR = originalConfigDir
         }
       }
     })

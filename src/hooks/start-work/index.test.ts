@@ -23,14 +23,14 @@ describe("start-work hook", () => {
   let omoDir: string
 
   function createMockPluginInput() {
-    return {
+    return unsafeTestValue<Parameters<typeof createStartWorkHook>[0]>({
       directory: testDir,
       client: {
         session: {
           messages: async () => ({ data: [] }),
         },
       },
-    } as Parameters<typeof createStartWorkHook>[0]
+    })
   }
 
   function createStartWorkPrompt(options?: {
@@ -190,7 +190,7 @@ You are starting a Sisyphus work session.
       writeFileSync(planAPath, "# Plan A\n- [ ] Task 1")
       writeFileSync(planBPath, "# Plan B\n- [ ] Task 2")
 
-      const hook = createStartWorkHook({
+      const hook = createStartWorkHook(unsafeTestValue<Parameters<typeof createStartWorkHook>[0]>({
         directory: testDir,
         client: {
           session: {
@@ -207,7 +207,7 @@ You are starting a Sisyphus work session.
             }),
           },
         },
-      } as Parameters<typeof createStartWorkHook>[0])
+      }))
       const output = {
         parts: [{ type: "text", text: createStartWorkPrompt() }],
       }
@@ -245,7 +245,7 @@ You are starting a Sisyphus work session.
         plan_name: "old-plan",
       })
 
-      const hook = createStartWorkHook({
+      const hook = createStartWorkHook(unsafeTestValue<Parameters<typeof createStartWorkHook>[0]>({
         directory: testDir,
         client: {
           session: {
@@ -262,7 +262,7 @@ You are starting a Sisyphus work session.
             }),
           },
         },
-      } as Parameters<typeof createStartWorkHook>[0])
+      }))
       const output = {
         parts: [{ type: "text", text: createStartWorkPrompt() }],
       }
@@ -291,7 +291,7 @@ You are starting a Sisyphus work session.
       writeFileSync(planAPath, "# Plan A\n- [ ] Task A")
       writeFileSync(planBPath, "# Plan B\n- [ ] Task B")
 
-      const hook = createStartWorkHook({
+      const hook = createStartWorkHook(unsafeTestValue<Parameters<typeof createStartWorkHook>[0]>({
         directory: testDir,
         client: {
           session: {
@@ -313,7 +313,7 @@ You are starting a Sisyphus work session.
             }),
           },
         },
-      } as Parameters<typeof createStartWorkHook>[0])
+      }))
       const output = {
         parts: [{ type: "text", text: createStartWorkPrompt() }],
       }
@@ -899,6 +899,7 @@ You are starting a Sisyphus work session.
           session: {
             promptAsync: promptAsyncMock,
             prompt: async (_request: unknown) => undefined,
+            get: async () => ({ data: {} }),
             messages: async () => ({ data: [] }),
           },
         },
@@ -916,7 +917,7 @@ You are starting a Sisyphus work session.
 
       // then
       expect(output.message.agent).toBe("atlas")
-      expect(readBoulderState(testDir)?.session_ids).toContain("session-123")
+      expect(readBoulderState(testDir)?.session_ids).toContain("opencode:session-123")
       expect(readBoulderState(testDir)?.agent).toBe("atlas")
       expect(promptAsyncMock).toHaveBeenCalledTimes(1)
       promptAsyncMock.mockRestore()
@@ -968,6 +969,7 @@ You are starting a Sisyphus work session.
           session: {
             promptAsync: promptAsyncMock,
             prompt: async (_request: unknown) => undefined,
+            get: async () => ({ data: {} }),
             messages: async () => ({ data: [] }),
           },
         },
@@ -1006,7 +1008,7 @@ You are starting a Sisyphus work session.
 
         // then
         expect(output.message.agent).toBe("atlas")
-        expect(readBoulderState(testDir)?.session_ids).toContain("session-123")
+        expect(readBoulderState(testDir)?.session_ids).toContain("opencode:session-123")
         expect(readBoulderState(testDir)?.agent).toBe("atlas")
         expect(promptAsyncMock).toHaveBeenCalledTimes(1)
       } finally {
@@ -1022,7 +1024,8 @@ You are starting a Sisyphus work session.
     let detectSpy: ReturnType<typeof spyOn>
 
     beforeEach(() => {
-      detectSpy = spyOn(worktreeDetector, "detectWorktreePath").mockReturnValue(null)
+      detectSpy = spyOn(worktreeDetector, "detectWorktreePath")
+      detectSpy.mockReturnValue(null)
     })
 
     afterEach(() => {
@@ -1138,7 +1141,7 @@ You are starting a Sisyphus work session.
       // then - boulder reflects updated worktree and new session appended
       const state = readBoulderState(testDir)
       expect(state?.worktree_path).toBe("/new/wt")
-      expect(state?.session_ids).toContain("session-456")
+      expect(state?.session_ids).toContain("opencode:session-456")
     })
 
     test("should show existing worktree on resume when no --worktree flag", async () => {
@@ -1201,6 +1204,66 @@ You are starting a Sisyphus work session.
       } finally {
         rmSync(worktreeDir, { recursive: true, force: true })
       }
+    })
+  })
+
+  // Regression coverage for #4480 — on an error-retry path OpenCode may
+  // re-issue the start-work template alongside the already-processed text,
+  // producing multiple text parts (or a second <session-context> block) with
+  // un-substituted $SESSION_ID / $TIMESTAMP literals. The hook must substitute
+  // across every text part, and must not stack a second contextInfo block.
+  describe("retry-path idempotence (#4480)", () => {
+    test("should substitute $SESSION_ID / $TIMESTAMP across all text parts", async () => {
+      // given - retry-style multi-part input where a second template was re-
+      // issued after the first part was already substituted by an earlier
+      // hook firing
+      const hook = createStartWorkHook(createMockPluginInput())
+      const output = {
+        parts: [
+          {
+            type: "text",
+            text: createStartWorkPrompt({ sessionContext: "Session: ses-abc123\nTimestamp: 2026-01-01T00:00:00Z" }),
+          },
+          {
+            type: "text",
+            text: createStartWorkPrompt({ sessionContext: "Session: $SESSION_ID\nTimestamp: $TIMESTAMP" }),
+          },
+        ],
+      }
+
+      // when
+      await hook["chat.message"](
+        { sessionID: "ses-retry-789" },
+        output
+      )
+
+      // then - both parts should have placeholders replaced
+      expect(output.parts[0].text).not.toContain("$SESSION_ID")
+      expect(output.parts[0].text).not.toContain("$TIMESTAMP")
+      expect(output.parts[1].text).not.toContain("$SESSION_ID")
+      expect(output.parts[1].text).not.toContain("$TIMESTAMP")
+      expect(output.parts[1].text).toContain("ses-retry-789")
+    })
+
+    test("should not append contextInfo twice when hook fires more than once", async () => {
+      // given - hook fires once
+      const hook = createStartWorkHook(createMockPluginInput())
+      const output = {
+        parts: [{ type: "text", text: createStartWorkPrompt() }],
+      }
+      await hook["chat.message"]({ sessionID: "session-double" }, output)
+      const firstRunText = output.parts[0].text ?? ""
+      const firstMarkerCount = (firstRunText.match(/<!-- omo-start-work-context -->/g) ?? []).length
+      expect(firstMarkerCount).toBe(1)
+
+      // when - the same output re-enters the hook (e.g. retry, or
+      // command.execute.before followed by chat.message)
+      await hook["chat.message"]({ sessionID: "session-double" }, output)
+
+      // then - the marker must still appear exactly once
+      const secondRunText = output.parts[0].text ?? ""
+      const secondMarkerCount = (secondRunText.match(/<!-- omo-start-work-context -->/g) ?? []).length
+      expect(secondMarkerCount).toBe(1)
     })
   })
 })

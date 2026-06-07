@@ -19,28 +19,28 @@ const ULTRAWORK_PROMPT_BASELINES: readonly UltraworkPromptBaseline[] = [
     agentName: "sisyphus",
     modelID: "claude-sonnet-4-6",
     expectedSource: "default",
-    sha256: "78aa43e2e2b7db307827d9ddda30a4c6a24aa35a9255efe1ee39a4476d71acca",
+    sha256: "4485ef94d3b4b0835b20e42f2874e12b886a0dbed7256c0a2ce37d5e35aa6692",
   },
   {
     name: "gpt",
     agentName: "sisyphus",
     modelID: "gpt-5.5",
     expectedSource: "gpt",
-    sha256: "8f31f0053256914e94605944b28e123c584a0ad093e0d44d5ad66da009a632ae",
+    sha256: "538980d3a2ff0847409d8682c5dd3343e2e26f1a9ed8f02398a6688769940337",
   },
   {
     name: "gemini",
     agentName: "sisyphus",
     modelID: "gemini-3.1-pro",
     expectedSource: "gemini",
-    sha256: "5c5766549e868e7a1c87252e742e491b7015138948c6e26fb704346bb55d5d7c",
+    sha256: "16c26365148818a38009fa4e8acbd13172a26ddb84c276cff5e671b10da24511",
   },
   {
     name: "planner",
     agentName: "prometheus",
     modelID: "gpt-5.5",
     expectedSource: "planner",
-    sha256: "8897b3a11b61c12a02bfba13a76c80742bc4e5356cfc30e2f0c38464aa587bf3",
+    sha256: "bdb4573634cde51b7c593cdc4a6c8dcf37d405a9963d77a24bf8dd88bbfe93d7",
   },
 ]
 

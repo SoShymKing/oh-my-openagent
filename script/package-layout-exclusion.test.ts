@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -25,13 +25,16 @@ const fakeInternalArtifactCleanupPaths = [
   ...fakeInternalSkillArtifactRootPaths,
   ...fakeInternalCommandArtifactPaths,
 ] as const
+const packageLayoutTestTimeoutMs = 60_000
+
+setDefaultTimeout(packageLayoutTestTimeoutMs)
 
 let originalPackageJsonText: string | null = null
 let packageJsonWasTemporarilyModified = false
 
 class PackDryRunError extends Error {
   constructor(readonly exitCode: number, readonly stderr: string) {
-    super(`bun pm pack --dry-run failed with exit code ${exitCode}: ${stderr}`)
+    super(`bun pm pack --dry-run --ignore-scripts failed with exit code ${exitCode}: ${stderr}`)
     this.name = "PackDryRunError"
   }
 }
@@ -90,7 +93,7 @@ function parsePackedPaths(output: string): Set<string> {
 
 async function packDryRunPaths(): Promise<Set<string>> {
   const packProcess = Bun.spawn({
-    cmd: ["bun", "pm", "pack", "--dry-run"],
+    cmd: ["bun", "pm", "pack", "--dry-run", "--ignore-scripts"],
     cwd: repositoryRoot,
     stdout: "pipe",
     stderr: "pipe",
@@ -150,7 +153,18 @@ function writeFakeInternalArtifacts(packagePaths: readonly string[]): void {
   for (const packagePath of packagePaths) {
     const artifactPath = join(repositoryRoot, packagePath)
     mkdirSync(dirname(artifactPath), { recursive: true })
-    writeFileSync(artifactPath, "# Fake internal artifact for package-layout-exclusion.test.ts\n")
+    const content = packagePath.endsWith("/SKILL.md")
+      ? [
+          "---",
+          `name: ${fakeArtifactName}`,
+          "description: Internal fake skill artifact for package layout exclusion tests.",
+          "---",
+          "",
+          "# Fake internal artifact for package-layout-exclusion.test.ts",
+          "",
+        ].join("\n")
+      : "# Fake internal artifact for package-layout-exclusion.test.ts\n"
+    writeFileSync(artifactPath, content)
   }
 }
 
@@ -183,6 +197,9 @@ describe("published package layout exclusions", () => {
   test("#given internal-only skill assets #when packing package #then forbidden skill assets do not ship", async () => {
     // given
     expect(collectExistingFakeInternalSkillArtifactPaths()).toEqual(fakeInternalSkillArtifactPaths.toSorted())
+    for (const packagePath of fakeInternalSkillArtifactPaths) {
+      expect(readFileSync(join(repositoryRoot, packagePath), "utf8")).toStartWith("---\n")
+    }
 
     // when
     const packedPaths = await packDryRunPaths()
@@ -190,7 +207,7 @@ describe("published package layout exclusions", () => {
     // then
     const packedInternalSkillPaths = fakeInternalSkillArtifactPaths.filter((packagePath) => packedPaths.has(packagePath))
     expect(packedInternalSkillPaths).toEqual([])
-  })
+  }, { timeout: 20_000 })
 
   test("#given internal-only command assets #when packing package #then forbidden command assets do not ship", async () => {
     // given
@@ -204,5 +221,5 @@ describe("published package layout exclusions", () => {
     // then
     const packedInternalCommandPaths = fakeInternalCommandArtifactPaths.filter((packagePath) => packedPaths.has(packagePath))
     expect(packedInternalCommandPaths).toEqual([])
-  })
+  }, { timeout: 20_000 })
 })

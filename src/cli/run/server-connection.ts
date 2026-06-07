@@ -45,7 +45,10 @@ function isLoopbackAttachUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
     return LOOPBACK_HOSTS.has(parsed.hostname)
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) {
+      throw error
+    }
     return false
   }
 }
@@ -75,6 +78,7 @@ async function startServer<TClient>(
     deps.createOpencode({ signal, port, hostname: "127.0.0.1" }),
   )
 
+  deps.injectServerAuthIntoClient(client)
   console.log(pc.dim("Server listening at"), pc.cyan(server.url))
   return { client, cleanup: () => server.close() }
 }

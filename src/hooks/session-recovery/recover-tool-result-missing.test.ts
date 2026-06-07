@@ -38,6 +38,7 @@ interface PromptAsyncInput {
 function createMockClient(
   messages: MessageData[] = [],
   promptAsyncImpl?: (input: PromptAsyncInput) => Promise<unknown>,
+  messagesImpl?: () => Promise<unknown>,
 ) {
   const promptAsyncCalls: PromptAsyncInput[] = []
   const promptAsync = mock((input: PromptAsyncInput) => {
@@ -48,7 +49,7 @@ function createMockClient(
   return {
     client: {
       session: {
-        messages: mock(() => Promise.resolve({ data: messages })),
+        messages: mock(() => messagesImpl ? messagesImpl() : Promise.resolve({ data: messages })),
         promptAsync,
       },
     } as never,
@@ -85,6 +86,21 @@ describe("recoverToolResultMissing", () => {
         parts: [{ type: "tool", id: "prt_missing_call", name: "bash", input: {} }],
       },
     ])
+
+    //#when
+    const result = await recoverToolResultMissing(client, "ses_1", failedAssistantMsg)
+
+    //#then
+    expect(result).toBe(false)
+    expect(promptAsync).not.toHaveBeenCalled()
+  })
+
+  it("#given sqlite fallback message fetch fails #when recovering missing tool result #then returns false", async () => {
+    //#given
+    sqliteBackend = true
+    const { client, promptAsync } = createMockClient([], undefined, async () => {
+      throw new Error("messages unavailable")
+    })
 
     //#when
     const result = await recoverToolResultMissing(client, "ses_1", failedAssistantMsg)
@@ -254,7 +270,7 @@ describe("recoverToolResultMissing", () => {
     const resumeConfig = {
       sessionID: "ses_pin",
       agent: "Hephaestus",
-      model: { providerID: "openai", modelID: "gpt-5.3-codex", variant: "max" },
+      model: { providerID: "openai", modelID: "gpt-5.5", variant: "max" },
     }
 
     // when
@@ -265,7 +281,7 @@ describe("recoverToolResultMissing", () => {
     expect(promptAsync).toHaveBeenCalledTimes(1)
     const call = firstPromptAsyncCall(promptAsyncCalls)
     expect(call.body.agent).toBe("Hephaestus")
-    expect(call.body.model).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex" })
+    expect(call.body.model).toEqual({ providerID: "openai", modelID: "gpt-5.5" })
     expect(call.body.variant).toBe("max")
   })
 
@@ -310,6 +326,27 @@ describe("recoverToolResultMissing", () => {
 
     // then
     expect(result).toBe(true)
+    expect(promptAsync).toHaveBeenCalledTimes(1)
+  })
+
+  it("#given prompt dispatch fails non-ambiguously #when recovering missing tool result #then returns false", async () => {
+    // given
+    storedParts = [{
+      type: "tool",
+      id: "prt_stored_rejected_call",
+      callID: "toolu_rejected",
+      tool: "bash",
+      state: { input: {} },
+    }]
+    const { client, promptAsync } = createMockClient([], async () => {
+      throw new Error("permission denied")
+    })
+
+    // when
+    const result = await recoverToolResultMissing(client, "ses_rejected_recovery", failedAssistantMsg)
+
+    // then
+    expect(result).toBe(false)
     expect(promptAsync).toHaveBeenCalledTimes(1)
   })
 })

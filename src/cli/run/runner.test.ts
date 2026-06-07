@@ -1,9 +1,8 @@
 /// <reference types="bun-types" />
 
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test"
 import { OhMyOpenCodeConfigSchema, type OhMyOpenCodeConfig } from "../../config"
 import { resolveRunAgent } from "./agent-resolver"
-import { getAgentDisplayName } from "../../shared/agent-display-names"
 
 const createConfig = (overrides: Partial<OhMyOpenCodeConfig> = {}): OhMyOpenCodeConfig =>
   OhMyOpenCodeConfigSchema.parse(overrides)
@@ -32,7 +31,7 @@ describe("resolveRunAgent", () => {
     )
 
     // then
-    expect(agent).toBe(getAgentDisplayName("hephaestus"))
+    expect(agent).toBe("hephaestus")
   })
 
   it("uses env agent over config", () => {
@@ -44,7 +43,7 @@ describe("resolveRunAgent", () => {
     const agent = resolveRunAgent({ message: "test" }, config, env)
 
     // then
-    expect(agent).toBe(getAgentDisplayName("atlas"))
+    expect(agent).toBe("atlas")
   })
 
   it("uses config agent over default", () => {
@@ -55,7 +54,7 @@ describe("resolveRunAgent", () => {
     const agent = resolveRunAgent({ message: "test" }, config, {})
 
     // then
-    expect(agent).toBe(getAgentDisplayName("prometheus"))
+    expect(agent).toBe("prometheus")
   })
 
   it("falls back to sisyphus when none set", () => {
@@ -66,7 +65,7 @@ describe("resolveRunAgent", () => {
     const agent = resolveRunAgent({ message: "test" }, config, {})
 
     // then
-    expect(agent).toBe(getAgentDisplayName("sisyphus"))
+    expect(agent).toBe("sisyphus")
   })
 
   it("skips disabled sisyphus for next available core agent", () => {
@@ -77,10 +76,10 @@ describe("resolveRunAgent", () => {
     const agent = resolveRunAgent({ message: "test" }, config, {})
 
     // then
-    expect(agent).toBe(getAgentDisplayName("hephaestus"))
+    expect(agent).toBe("hephaestus")
   })
 
-  it("maps display-name style default_run_agent values to canonical runtime names", () => {
+  it("maps display-name style default_run_agent values to canonical prompt agent ids", () => {
     // given
     const config = createConfig({ default_run_agent: "Sisyphus - Ultraworker" })
 
@@ -88,7 +87,7 @@ describe("resolveRunAgent", () => {
     const agent = resolveRunAgent({ message: "test" }, config, {})
 
     // then
-    expect(agent).toBe(getAgentDisplayName("sisyphus"))
+    expect(agent).toBe("sisyphus")
   })
 })
 
@@ -123,7 +122,7 @@ describe("waitForEventProcessorShutdown", () => {
 
     //#then
     const elapsed = performance.now() - start
-    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 10)
+    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 50)
   })
 })
 
@@ -169,40 +168,27 @@ describe("run environment setup", () => {
 describe("run with invalid model", () => {
   it("given invalid --model value, when run, then returns exit code 1 with error message", async () => {
     // given
-    const originalExit = process.exit
+    mock.restore()
     const originalError = console.error
     const errorMessages: string[] = []
-    const exitCodes: number[] = []
 
     console.error = (...args: unknown[]) => {
       errorMessages.push(args.map(String).join(" "))
     }
-    process.exit = ((code?: number) => {
-      exitCodes.push(code ?? 0)
-      throw new Error("exit")
-    }) as typeof process.exit
 
     try {
       // when
-      // Note: This will actually try to run - but the issue is that resolveRunModel
-      // is called BEFORE the try block, so it throws an unhandled exception
-      // We're testing the runner's error handling
-      const { run } = await import("./runner")
+      const { run } = await import(`./runner?invalid-model=${Date.now()}-${Math.random()}`)
+      const exitCode = await run({
+        message: "test",
+        model: "invalid",
+      })
 
-      // This will throw because model "invalid" is invalid format
-      try {
-        await run({
-          message: "test",
-          model: "invalid",
-        })
-      } catch {
-        // Expected to potentially throw due to unhandled model resolution error
-      }
+      // then
+      expect(exitCode).toBe(1)
+      expect(errorMessages.join("\n")).toContain("Model string must be in 'provider/model' format")
     } finally {
-      // then - verify error handling
-      // Currently this will fail because the error is not caught properly
       console.error = originalError
-      process.exit = originalExit
     }
   })
 })

@@ -2,9 +2,8 @@
 
 import { mock } from "bun:test"
 import { randomUUID } from "node:crypto"
-import { Effect } from "effect"
 
-import type { ToolContext } from "@opencode-ai/plugin/tool"
+import type { ToolContext, ToolResult } from "@opencode-ai/plugin/tool"
 
 import { TeamModeConfigSchema } from "../../../config/schema/team-mode"
 import type { OpencodeClient } from "../../../tools/delegate-task/types"
@@ -19,8 +18,8 @@ function clone<TValue>(value: TValue): TValue {
   return structuredClone(value)
 }
 
-export function parseToolResult<TValue>(value: string): TValue {
-  return JSON.parse(value) as TValue
+export function parseToolResult<TValue>(value: ToolResult): TValue {
+  return JSON.parse(typeof value === "string" ? value : value.output) as TValue
 }
 
 export function createToolContext(sessionID: string): ToolContext {
@@ -32,7 +31,8 @@ export function createToolContext(sessionID: string): ToolContext {
     worktree: "/project",
     abort: new AbortController().signal,
     metadata: () => {},
-    ask: () => Effect.void,
+    // ask: () => Effect.void,
+    ask: async () => undefined,
   }
 }
 
@@ -132,7 +132,7 @@ export const approveShutdownMock = mock(async (teamRunId: string, memberName: st
   const member = runtimeState.members.find((candidate) => candidate.name === memberName)
   if (member) member.status = "shutdown_approved"
 })
-export const rejectShutdownMock = mock(async (teamRunId: string, memberName: string, reason: string) => {
+export const rejectShutdownMock = mock(async (teamRunId: string, memberName: string, _rejectorName: string, reason: string) => {
   const request = getLatestShutdownRequest(requireRuntime(teamRunId), memberName)
   if (request) {
     request.rejectedAt = Date.now()

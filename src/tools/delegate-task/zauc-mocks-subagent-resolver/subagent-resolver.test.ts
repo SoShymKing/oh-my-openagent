@@ -236,6 +236,22 @@ describe("resolveSubagentExecution", () => {
     expect(result.error).toContain("pick one of: quick, deep, ultrabrain")
   })
 
+  test("blocks zero-width-prefixed direct Sisyphus-Junior requests", async () => {
+    //#given
+    const args = createBaseArgs({ subagent_type: "\u200Bsisyphus-junior" })
+    const executorCtx = createExecutorContext(async () => ([
+      { name: "Sisyphus-Junior", mode: "subagent" },
+    ]))
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.agentToUse).toBe("")
+    expect(result.error).toBeDefined()
+    expect(result.error).toContain('Cannot use subagent_type="Sisyphus-Junior" directly')
+  })
+
   test("requires explicit all or subagent mode for task-callable agents", async () => {
     //#given
     const args = createBaseArgs({ subagent_type: "custom-worker" })
@@ -340,7 +356,7 @@ describe("resolveSubagentExecution", () => {
     async ({ loader, aliasName }) => {
       //#given
       readProviderModelsCacheMock.mockReturnValue({
-        models: { openai: ["gpt-5.3-codex"] },
+        models: { openai: ["gpt-5.5"] },
         connected: ["openai"],
         updatedAt: "2026-03-03T00:00:00.000Z",
       })
@@ -351,7 +367,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding plan alias from user agents",
               mode: "subagent",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -364,7 +380,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding plan alias from project agents",
               mode: "subagent",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -406,7 +422,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding primary plan alias from user agents",
               mode: "primary",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -419,7 +435,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding primary plan alias from project agents",
               mode: "primary",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -465,7 +481,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding hidden build alias from user agents",
               mode: "subagent",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -478,7 +494,7 @@ describe("resolveSubagentExecution", () => {
             [aliasName]: {
               description: "Colliding hidden build alias from project agents",
               mode: "subagent",
-              model: "openai/gpt-5.3-codex",
+              model: "openai/gpt-5.5",
             },
           } satisfies ClaudeCodeAgentRecord
         }
@@ -503,13 +519,13 @@ describe("resolveSubagentExecution", () => {
   test("preserves a visible server plan agent instead of using fallback", async () => {
     //#given
     readProviderModelsCacheMock.mockReturnValue({
-      models: { openai: ["gpt-5.3-codex"] },
+      models: { openai: ["gpt-5.5"] },
       connected: ["openai"],
       updatedAt: "2026-03-03T00:00:00.000Z",
     })
     const args = createBaseArgs({ subagent_type: "plan" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "plan", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "plan", mode: "subagent", model: "openai/gpt-5.5" },
       { name: "oracle", mode: "subagent" },
     ]), {
       sisyphusAgentConfig: {
@@ -524,7 +540,7 @@ describe("resolveSubagentExecution", () => {
     //#then
     expect(result.error).toBeUndefined()
     expect(result.agentToUse).toBe("plan")
-    expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex" })
+    expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.5" })
   })
 
   test.each([
@@ -646,13 +662,13 @@ describe("resolveSubagentExecution", () => {
   test("normalizes matched agent model string before returning categoryModel", async () => {
     //#given
     readProviderModelsCacheMock.mockReturnValue({
-      models: { openai: ["grok-3", "gpt-5.3-codex"] },
+      models: { openai: ["grok-3", "gpt-5.5"] },
       connected: ["openai"],
       updatedAt: "2026-03-03T00:00:00.000Z",
     })
     const args = createBaseArgs({ subagent_type: "oracle" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "oracle", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "oracle", mode: "subagent", model: "openai/gpt-5.5" },
     ]))
 
     //#when
@@ -660,14 +676,29 @@ describe("resolveSubagentExecution", () => {
 
     //#then
     expect(result.error).toBeUndefined()
-    expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.3-codex" })
+    expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.5" })
+  })
+
+  test("normalizes matched agent object model before returning categoryModel", async () => {
+    //#given
+    const args = createBaseArgs({ subagent_type: "oracle" })
+    const executorCtx = createExecutorContext(async () => ([
+      { name: "oracle", mode: "subagent", model: { providerID: "openai", modelID: "gpt-5.5" } },
+    ]))
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.5" })
   })
 
   test("matches agents even when zero-width characters are present in the requested name", async () => {
     //#given
     const args = createBaseArgs({ subagent_type: "\uFEFFSisyphus - Ultraworker" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "\u200BSisyphus - ultraworker", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "\u200BSisyphus - ultraworker", mode: "subagent", model: "openai/gpt-5.5" },
     ]))
 
     //#when
@@ -693,7 +724,7 @@ describe("resolveSubagentExecution", () => {
       {
         agentOverrides: {
           explore: {
-            fallback_models: ["quotio/gpt-5.2", "glm-5(max)"],
+            fallback_models: ["quotio/gpt-5.5", "glm-5(max)"],
           },
         } as ExecutorContext["agentOverrides"],
       }
@@ -705,7 +736,7 @@ describe("resolveSubagentExecution", () => {
     //#then
     expect(result.error).toBeUndefined()
     expect(result.fallbackChain).toEqual([
-      { providers: ["quotio"], model: "gpt-5.2", variant: undefined },
+      { providers: ["quotio"], model: "gpt-5.5", variant: undefined },
       { providers: ["quotio"], model: "glm-5", variant: "max" },
     ])
   })
@@ -1351,7 +1382,7 @@ describe("resolveSubagentExecution - agent name sanitization", () => {
     })
     const args = createBaseArgs({ subagent_type: "\\hephaestus\\" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "Hephaestus - Deep Agent", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "Hephaestus - Deep Agent", mode: "subagent", model: "openai/gpt-5.5" },
     ]))
 
     //#when
@@ -1411,7 +1442,7 @@ describe("resolveSubagentExecution - agent name sanitization", () => {
     })
     const args = createBaseArgs({ subagent_type: "Sisyphus - Ultraworker" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "\u200BSisyphus - ultraworker", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "\u200BSisyphus - ultraworker", mode: "subagent", model: "openai/gpt-5.5" },
     ]))
 
     //#when
@@ -1431,7 +1462,7 @@ describe("resolveSubagentExecution - agent name sanitization", () => {
     })
     const args = createBaseArgs({ subagent_type: "Hephaestus - Deep Agent" })
     const executorCtx = createExecutorContext(async () => ([
-      { name: "\u200B\u200BHephaestus - Deep Agent", mode: "subagent", model: "openai/gpt-5.3-codex" },
+      { name: "\u200B\u200BHephaestus - Deep Agent", mode: "subagent", model: "openai/gpt-5.5" },
     ]))
 
     //#when

@@ -201,7 +201,8 @@ export async function tryFallbackRetry(args: {
     )
   }
 
-  const key = task.model ? `${task.model.providerID}/${task.model.modelID}` : task.agent
+  const rawKey = task.model ? `${task.model.providerID}/${task.model.modelID}` : task.agent
+  const key = concurrencyManager.getConcurrencyKey(rawKey)
   const queue = queuesByKey.get(key) ?? []
   const retryInput: LaunchInput = {
     description: task.description,
@@ -226,7 +227,7 @@ export async function tryFallbackRetry(args: {
     await abortWithTimeout(client, previousSessionID).catch(() => {})
   }
 
-  queue.push({ task, input: retryInput, attemptID: nextAttempt.attemptId })
+  queue.push({ task, input: retryInput, attemptID: nextAttempt.attemptId, rawConcurrencyKey: rawKey })
   queuesByKey.set(key, queue)
   processKey(key)
   return true
