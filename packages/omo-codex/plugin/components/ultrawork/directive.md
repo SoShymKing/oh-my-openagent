@@ -74,7 +74,7 @@ may skip the plan agent — justify that skip in the notepad.
 
 ## 1. Create the goal with binding success criteria
 Call `create_goal` (or open your reply with a `# Goal` block treated as
-binding) using exactly `objective` and `status` fields. Goals are
+binding) using exactly `objective`. Do not include `status`. Goals are
 unlimited; never invent a numeric budget or limit.
 The criteria MUST list, upfront:
 - The user-visible deliverable in one line.
@@ -237,6 +237,15 @@ handoff. Prefer `fork_turns: "none"` unless full history is truly
 required; paste only the context the child needs. Full-history forks can
 make the child continue old parent context instead of the delegated task.
 
+# TOML-backed subagent routing compatibility
+Treat TOML-backed role routing as **routing-unverified**. The available
+`spawn_agent` schema accepts only `task_name`, `message`, and
+`fork_turns`; it cannot select a TOML-backed role, model, reasoning
+effort, or `service_tier`. Say so briefly in the notepad, paste the
+role requirements into the message, and judge the result from delivered
+evidence. Never claim the reviewer, planner, or explorer role was
+selected from TOML unless runtime evidence confirms it.
+
 Treat child status as a progress signal, not a timeout counter. For
 work likely to exceed one wait cycle, tell the child to send
 `WORKING: <task> - <current phase>` before long reading, testing, or
@@ -254,6 +263,19 @@ silent or ack-only, record the result as inconclusive, do not count it
 as approval/pass, close it if safe, and respawn a smaller
 `fork_turns: "none"` task with the missing deliverable.
 
+# Subagent-dependent transition barrier
+Do not mark an `update_plan` step `completed` while an active child owns
+evidence for that step. Do not start dependent implementation until the
+audit, research, or review result is integrated or explicitly recorded
+as inconclusive. Do not generate a plan before spawned research lanes
+that feed the plan have returned or been closed as inconclusive.
+Do not write the final answer, PR handoff, or completion summary while
+active child agents remain open. Use short `wait_agent` cycles.
+After two silent waits send `TASK STILL ACTIVE: return <deliverable> or
+BLOCKED: <reason>`. After four silent or ack-only checks, close the lane as
+inconclusive, record that it is not approval, and respawn smaller only
+if the deliverable is still required.
+
 # Verification gate (TRIGGERED, NOT OPTIONAL)
 
 Trigger when ANY apply:
@@ -263,10 +285,10 @@ Trigger when ANY apply:
   anything the user called deep.
 
 Procedure (NON-NEGOTIABLE):
-1. Spawn `agent_type="codex-ultrawork-reviewer"` with
-   `fork_turns: "none"`. If unavailable, spawn `agent_type="worker"`
-   with a self-contained reviewer assignment and tight scope. `model` +
-   `reasoning_effort` alone creates a default agent, not a reviewer.
+1. Spawn a child with `fork_turns: "none"` and a self-contained reviewer
+   assignment in `message`. The `spawn_agent` schema cannot select a
+   TOML-backed reviewer role, so paste the reviewer requirements into
+   the message.
    Pass: goal, success-criteria, scenario evidence, full diff, notepad
    path.
 2. Treat the reviewer's verdict as binding. There is NO "false

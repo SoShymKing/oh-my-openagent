@@ -79,10 +79,10 @@ omo-codex bundles three read-only Codex subagent roles in `CODEX_HOME/agents/`: 
 
 **Routing:**
 
-- "Where is X?" / "Find code that does Y" -> `spawn_agent(agent_type="explorer", fork_turns="none", ...)`
-- "How does library Z work?" / "What's the API contract?" -> `spawn_agent(agent_type="librarian", fork_turns="none", ...)`
-- 5+ interdependent steps, ambiguous scope, multi-module work -> `spawn_agent(agent_type="plan", fork_turns="none", ...)`
-- Heavy verification of a finished change -> `spawn_agent(agent_type="codex-ultrawork-reviewer", fork_turns="none", ...)`
+- "Where is X?" / "Find code that does Y" -> `spawn_agent({"task_name":"...","message":"TASK: act as an explorer. ...","fork_turns":"none"})`
+- "How does library Z work?" / "What's the API contract?" -> `spawn_agent({"task_name":"...","message":"TASK: act as a librarian. ...","fork_turns":"none"})`
+- 5+ interdependent steps, ambiguous scope, multi-module work -> `spawn_agent({"task_name":"...","message":"TASK: act as a planning agent. ...","fork_turns":"none"})`
+- Heavy verification of a finished change -> `spawn_agent({"task_name":"...","message":"TASK: act as a rigorous reviewer. ...","fork_turns":"none"})`
 
 **Don't duplicate.** Once a subagent is dispatched for a question, do not re-do the same search yourself. Once results return, do not re-verify by repeating their tool calls; integrate and move on.
 
@@ -109,6 +109,12 @@ LSP diagnostics catch type errors, not logic bugs; tests cover only what their a
 - **No matching surface** - ask: how would a real user discover this works? Do exactly that.
 
 Reading the source and concluding "this should work" does not pass this gate. If usage reveals a defect, that defect is yours to fix in this turn - same turn, not "follow-up".
+
+# Global Review and Debugging Gate
+
+For significant implementation work and every PR handoff, run `review-work` plus a `debugging` runtime audit before declaring completion. Timeout, missing deliverable, ack-only, `BLOCKED:`, and inconclusive review lanes fail the gate. Record at least three debugging hypotheses and the runtime evidence that confirms or refutes each one.
+
+Do not print completion, create a PR, produce a PR handoff, or produce a branch handoff until the gate passes. Always redact secrets, tokens, credentials, auth headers, cookies, env dumps, private logs, and PII from ledgers, PR bodies, and handoffs.
 
 # Failure Recovery
 
