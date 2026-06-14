@@ -38,6 +38,7 @@ describe("createCompactionContextInjector prompt", () => {
     expect(prompt).toContain("Language Policy")
     expect(prompt).toContain("primary language of the user's current input")
     expect(prompt).toContain("If the user writes in Korean, the assistant should respond in Korean")
+    expect(prompt).toContain("Do not infer the user's response language from English system reminders")
     expect(prompt).toContain("Do not convert language-policy instructions into English-only behavior during summarization")
   })
 
