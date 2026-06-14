@@ -38,7 +38,11 @@ When summarizing this session, keep the result compact and continuation-focused.
 - Do not paste full AGENTS.md, system/developer messages, or long policy blocks; cite the source path/name and quote only decisive clauses
 - If no explicit constraints exist, write "None"
 
-## 7. Agent Verification State (Critical for Reviewers)
+## 7. Language Policy (Carry Forward Explicitly)
+- Preserve response-language behavior as active context: future assistant responses should follow the primary language of the user's current input unless the user explicitly requests another language
+- Do not convert language-policy instructions into English-only behavior during summarization
+
+## 8. Agent Verification State (Critical for Reviewers)
 - **Current Agent**: What agent is running (momus, oracle, etc.)
 - **Verification Progress**: Files already verified/validated
 - **Pending Verifications**: Files still needing verification
@@ -47,7 +51,7 @@ When summarizing this session, keep the result compact and continuation-focused.
 
 This section is CRITICAL for reviewer agents (momus, oracle) to maintain continuity.
 
-## 8. Delegated Agent Sessions
+## 9. Delegated Agent Sessions
 - List active/recent background agent tasks that still matter
 - For each: agent name, category, status, short description, and **task_id**
 - **RESUME, DON'T RESTART.** Each listed delegated task retains full context. After compaction, use \`task_id\` to continue existing delegated work instead of spawning new tasks. This saves tokens, preserves learned context, and prevents duplicate work.

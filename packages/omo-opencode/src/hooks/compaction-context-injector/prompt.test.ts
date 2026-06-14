@@ -27,6 +27,19 @@ function createMockBackgroundManager(): BackgroundManager {
 }
 
 describe("createCompactionContextInjector prompt", () => {
+  it("carries response language policy through compaction summaries", async () => {
+    //#given
+    const injector = createCompactionContextInjector()
+
+    //#when
+    const prompt = injector.inject("ses_language_policy")
+
+    //#then
+    expect(prompt).toContain("Language Policy")
+    expect(prompt).toContain("primary language of the user's current input")
+    expect(prompt).toContain("If the user writes in Korean, the assistant should respond in Korean")
+    expect(prompt).toContain("Do not convert language-policy instructions into English-only behavior during summarization")
+  })
 
   describe("Delegated Agent Sessions", () => {
     it("injects actual task history when backgroundManager and sessionID provided", async () => {
