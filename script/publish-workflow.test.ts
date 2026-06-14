@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import { execFileSync } from "node:child_process"
+import { PLATFORMS } from "./build-binaries"
 
 const ciWorkflowPath = new URL("../.github/workflows/ci.yml", import.meta.url)
 const publishWorkflowPath = new URL("../.github/workflows/publish.yml", import.meta.url)
@@ -348,6 +349,20 @@ describe("test workflows", () => {
     expect(darwinVerifyStep).not.toContain("codesign")
   })
 
+  test("regenerates and commits bun.lock in the release version bump", () => {
+    // #given
+    const workflow = readFileSync(publishWorkflowPath, "utf8")
+
+    // #when
+    const applyStep = sliceWorkflowSection(workflow, "      - name: Apply release version to source tree", "      - name: Commit version bump")
+    const commitStep = sliceWorkflowSection(workflow, "      - name: Commit version bump", "      - name: Create release tag")
+
+    // #then
+    expect(applyStep).toContain("bun install --lockfile-only")
+    expect(applyStep.indexOf("bun install --lockfile-only")).toBeGreaterThan(applyStep.indexOf("node packages/omo-codex/plugin/scripts/sync-version.mjs"))
+    expect(commitStep).toContain(" bun.lock")
+  })
+
   test("keeps the release tail safe to rerun after a tag exists", () => {
     // #given
     const workflow = readFileSync(publishWorkflowPath, "utf8")
@@ -367,6 +382,53 @@ describe("test workflows", () => {
     expect(noHardExistingTagFailure, "existing tags must not make reruns fail").toBe(true)
     expect(pushSkipsExistingRemoteTag, "tag push must be skip-if-exists").toBe(true)
     expect(marketplacePushSkipsWhenClean, "marketplace sync must skip push when rerun has no changes").toBe(true)
+  })
+
+  test("enumerates windows-arm64 consistently across every platform-list surface", () => {
+    // #given
+    const publishSource = readFileSync(new URL("../script/publish.ts", import.meta.url), "utf8")
+    const publishPlatformWorkflow = readFileSync(publishPlatformWorkflowPath, "utf8")
+
+    const publishIdsBlock = publishSource.slice(
+      publishSource.indexOf("PLATFORM_PACKAGE_IDS = ["),
+      publishSource.indexOf("] as const"),
+    )
+    const publishIds = [...publishIdsBlock.matchAll(/"([a-z0-9-]+)"/g)].map((match) => match[1]).sort()
+
+    const buildBinariesPlatforms = PLATFORMS.map((entry) => entry.platform).sort()
+
+    const matrixLists = [...publishPlatformWorkflow.matchAll(/^\s*platform: \[([^\]]+)\]/gm)].map((match) =>
+      match[1]
+        .split(",")
+        .map((value) => value.trim())
+        .sort(),
+    )
+
+    const publishWorkflow = readFileSync(publishWorkflowPath, "utf8")
+    const publishYmlLists = [
+      ...[...publishWorkflow.matchAll(/PLATFORMS=\(([^)]+)\)/g)].map((match) => match[1]),
+      ...[...publishWorkflow.matchAll(/for platform in (darwin-arm64[^\n;]*); do/g)].map((match) => match[1]),
+    ].map((list) => list.trim().split(/\s+/).sort())
+
+    // #when / #then
+    expect(publishIds, "PLATFORM_PACKAGE_IDS must list windows-arm64").toContain("windows-arm64")
+    expect(buildBinariesPlatforms, "build-binaries PLATFORMS must list windows-arm64").toContain("windows-arm64")
+    expect(matrixLists.length, "publish-platform.yml must define both build and publish matrices").toBe(2)
+    for (const matrixList of matrixLists) {
+      expect(matrixList, "every publish-platform matrix must list windows-arm64").toContain("windows-arm64")
+      expect(matrixList, "publish-platform matrix must match build-binaries PLATFORMS exactly").toEqual(
+        buildBinariesPlatforms,
+      )
+    }
+    expect(publishIds, "PLATFORM_PACKAGE_IDS must match build-binaries PLATFORMS exactly").toEqual(
+      buildBinariesPlatforms,
+    )
+    expect(publishYmlLists.length, "publish.yml must enumerate platforms in 2 PLATFORMS arrays + 2 version-bump loops").toBe(4)
+    for (const publishYmlList of publishYmlLists) {
+      expect(publishYmlList, "every publish.yml platform list must match build-binaries PLATFORMS exactly").toEqual(
+        buildBinariesPlatforms,
+      )
+    }
   })
 
 })
