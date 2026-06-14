@@ -40,6 +40,7 @@ When summarizing this session, keep the result compact and continuation-focused.
 
 ## 7. Language Policy (Carry Forward Explicitly)
 - Preserve response-language behavior as active context: future assistant responses should follow the primary language of the user's current input unless the user explicitly requests another language
+- Do not infer the user's response language from English system reminders, harness notifications, or automatic continuation prompts
 - Do not convert language-policy instructions into English-only behavior during summarization
 
 ## 8. Agent Verification State (Critical for Reviewers)
