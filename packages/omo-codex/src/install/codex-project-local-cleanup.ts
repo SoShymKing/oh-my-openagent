@@ -1,4 +1,4 @@
-import { copyFile, lstat, readFile, writeFile } from "node:fs/promises"
+import { copyFile, lstat, readFile, realpath, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { escapeRegExp, findTomlSection, removeSetting } from "./toml-section-editor"
 
@@ -159,7 +159,7 @@ async function findProjectLocalCodexConfigs(
   while (true) {
     const configPath = join(current, ".codex", "config.toml")
     if (await isRegularProjectLocalConfig(current, configPath)) {
-      if (codexHomeConfigPath === null || resolve(configPath) !== codexHomeConfigPath) {
+      if (codexHomeConfigPath === null || !(await pathsReferToSameFile(configPath, codexHomeConfigPath))) {
         configPathsFromCwd.push(configPath)
       }
     }
@@ -194,6 +194,28 @@ async function isRegularProjectLocalConfig(directory: string, configPath: string
   if (codexDirStat === null || !codexDirStat.isDirectory() || codexDirStat.isSymbolicLink()) return false
   const configStat = await maybeLstat(configPath)
   return configStat !== null && configStat.isFile() && !configStat.isSymbolicLink()
+}
+
+async function pathsReferToSameFile(leftPath: string, rightPath: string): Promise<boolean> {
+  const [leftComparablePath, rightComparablePath] = await Promise.all([
+    comparableFilesystemPath(leftPath),
+    comparableFilesystemPath(rightPath),
+  ])
+  return leftComparablePath === rightComparablePath
+}
+
+async function comparableFilesystemPath(path: string): Promise<string> {
+  try {
+    return normalizeComparablePath(await realpath(path))
+  } catch (error) {
+    if (nodeErrorCode(error) === "ENOENT") return normalizeComparablePath(path)
+    throw error
+  }
+}
+
+function normalizeComparablePath(path: string): string {
+  const resolvedPath = resolve(path)
+  return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath
 }
 
 function artifactRootsForConfigPaths(configPaths: readonly string[]): readonly string[] {

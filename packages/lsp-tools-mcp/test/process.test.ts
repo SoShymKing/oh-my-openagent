@@ -62,13 +62,22 @@ function killPidBestEffort(pid: number): void {
 	}
 }
 
+function windowsEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+	return {
+		PATH: "",
+		Path: "",
+		PATHEXT: ".COM;.EXE;.BAT;.CMD",
+		...overrides,
+	};
+}
+
 describe("createSpawnCommand", () => {
 	it("#given windows executable command #when building spawn command #then it avoids shell mode", () => {
 		// given
 		const command = ["typescript-language-server", "--stdio"];
 
 		// when
-		const prepared = createSpawnCommand(command, "win32", "cmd.exe");
+		const prepared = createSpawnCommand(command, "win32", "cmd.exe", windowsEnv());
 
 		// then
 		expect(prepared).toEqual({
@@ -83,7 +92,7 @@ describe("createSpawnCommand", () => {
 		const command = ["typescript-language-server.cmd", "--stdio"];
 
 		// when
-		const prepared = createSpawnCommand(command, "win32", "cmd.exe");
+		const prepared = createSpawnCommand(command, "win32", "cmd.exe", windowsEnv());
 
 		// then
 		expect(prepared).toEqual({
@@ -102,10 +111,10 @@ describe("createSpawnCommand", () => {
 		writeFileSync(shimPath, "@echo off\n");
 
 		// when
-		const prepared = createSpawnCommand(["typescript-language-server", "--stdio"], "win32", "cmd.exe", {
+		const prepared = createSpawnCommand(["typescript-language-server", "--stdio"], "win32", "cmd.exe", windowsEnv({
 			PATH: binaryDirectory,
 			PATHEXT: ".cmd;.exe",
-		});
+		}));
 
 		// then
 		expect(prepared).toEqual({
@@ -125,10 +134,10 @@ describe("createSpawnCommand", () => {
 		writeFileSync(shimPath, "@echo off\n");
 
 		// when
-		const prepared = createSpawnCommand(["jdtls", "--stdio"], "win32", "cmd.exe", {
+		const prepared = createSpawnCommand(["jdtls", "--stdio"], "win32", "cmd.exe", windowsEnv({
 			PATH: binaryDirectory,
 			PATHEXT: ".bat;.cmd",
-		});
+		}));
 
 		// then
 		expect(prepared).toEqual({

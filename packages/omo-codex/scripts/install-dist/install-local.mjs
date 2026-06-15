@@ -8470,7 +8470,7 @@ function stampHookStatusMessage(hook, version) {
 }
 
 // packages/omo-codex/src/install/codex-project-local-cleanup.ts
-import { copyFile as copyFile2, lstat as lstat7, readFile as readFile14, writeFile as writeFile9 } from "node:fs/promises";
+import { copyFile as copyFile2, lstat as lstat7, readFile as readFile14, realpath as realpath2, writeFile as writeFile9 } from "node:fs/promises";
 import { dirname as dirname6, join as join18, resolve as resolve6 } from "node:path";
 var LEGACY_AGENT_CONFLICT_KEYS = ["max_threads"];
 var PROJECT_LOCAL_ARTIFACT_PATHS = [
@@ -8580,7 +8580,7 @@ async function findProjectLocalCodexConfigs(startDirectory, codexHome) {
   while (true) {
     const configPath = join18(current, ".codex", "config.toml");
     if (await isRegularProjectLocalConfig(current, configPath)) {
-      if (codexHomeConfigPath === null || resolve6(configPath) !== codexHomeConfigPath) {
+      if (codexHomeConfigPath === null || !await pathsReferToSameFile(configPath, codexHomeConfigPath)) {
         configPathsFromCwd.push(configPath);
       }
     }
@@ -8609,6 +8609,26 @@ async function isRegularProjectLocalConfig(directory, configPath) {
     return false;
   const configStat = await maybeLstat(configPath);
   return configStat !== null && configStat.isFile() && !configStat.isSymbolicLink();
+}
+async function pathsReferToSameFile(leftPath, rightPath) {
+  const [leftComparablePath, rightComparablePath] = await Promise.all([
+    comparableFilesystemPath(leftPath),
+    comparableFilesystemPath(rightPath)
+  ]);
+  return leftComparablePath === rightComparablePath;
+}
+async function comparableFilesystemPath(path) {
+  try {
+    return normalizeComparablePath(await realpath2(path));
+  } catch (error) {
+    if (nodeErrorCode2(error) === "ENOENT")
+      return normalizeComparablePath(path);
+    throw error;
+  }
+}
+function normalizeComparablePath(path) {
+  const resolvedPath = resolve6(path);
+  return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
 }
 function artifactRootsForConfigPaths(configPaths) {
   const roots = [];

@@ -7,6 +7,7 @@ const CODEX_ROOT = join(REPO_ROOT, "packages", "omo-codex")
 const COMPONENT_ROOT = join(CODEX_ROOT, "plugin", "components", "telemetry")
 const REMOVED_SYNC_SCRIPT_NAME = ["sync", "telemetry", "component"].join("-")
 const TELEMETRY_CORE_PACKAGE = "@oh-my-opencode/telemetry-core"
+const IGNORED_SCAN_DIRECTORIES = new Set([".git", "dist", "node_modules"])
 const SYNCED_COMPONENT_SOURCE_PATTERN =
   /(atomic-write|data-path|diagnostics|env-flags|posthog-activity-state)\.ts$/
 
@@ -32,6 +33,7 @@ function collectFiles(root: string, relativePrefix = ""): string[] {
     const relativePath = join(relativePrefix, entry.name)
     const fullPath = join(root, relativePath)
     if (entry.isDirectory()) {
+      if (IGNORED_SCAN_DIRECTORIES.has(entry.name)) continue
       files.push(...collectFiles(root, relativePath))
     } else if (statSync(fullPath).isFile()) {
       files.push(relativePath)
@@ -43,7 +45,7 @@ function collectFiles(root: string, relativePrefix = ""): string[] {
 describe("omo-codex telemetry single-source guard", () => {
   describe("#given the omo-codex package tree", () => {
     it("#when sync-copy references are searched #then no telemetry sync script or build hook remains", () => {
-      const files = collectFiles(CODEX_ROOT).filter((file) => !file.includes("node_modules/"))
+      const files = collectFiles(CODEX_ROOT)
       const offenders: string[] = []
 
       for (const file of files) {

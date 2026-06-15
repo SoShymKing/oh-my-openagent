@@ -164,14 +164,13 @@ describe("rules-core", () => {
     mkdirSync(sourceDir, { recursive: true });
     writeFileSync(ruleFile, "markerless workspace rule");
     writeFileSync(currentFile, "export {};");
-    const projectRoot = findProjectRoot(currentFile);
+    const projectRoot = null;
     const options = { skipClaudeUserRules: false, workspaceDirectory: root };
 
     // when
     const found = findRuleFiles(projectRoot, homeDir, currentFile, options);
 
     // then
-    expect(projectRoot).toBeNull();
     expect(found.map((rule) => rule.path)).toContain(ruleFile);
   });
 

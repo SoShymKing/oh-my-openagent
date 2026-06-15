@@ -132,6 +132,7 @@ test("#given no project-local config and CODEX_HOME in the parent chain #when sc
 	const globalConfigPath = join(codexHome, "config.toml");
 
 	await mkdir(projectDirectory, { recursive: true });
+	await mkdir(join(homeRoot, ".git"), { recursive: true });
 	await mkdir(codexHome, { recursive: true });
 	await writeFile(
 		globalConfigPath,
