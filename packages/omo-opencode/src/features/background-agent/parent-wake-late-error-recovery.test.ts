@@ -4,6 +4,8 @@ import {
   releasePromptAsyncReservation,
 } from "../../hooks/shared/prompt-async-gate"
 import { ParentWakeNotifier } from "./parent-wake-notifier"
+import { ParentWakeDispatchedTracker } from "./parent-wake-dispatched-tracker"
+import { handleDispatchedParentWakeWindowElapsed } from "./parent-wake-window-recovery"
 
 type ParentWakeNotifierClientForTest = ConstructorParameters<typeof ParentWakeNotifier>[0]["client"]
 type PromptAsyncCall = Parameters<ParentWakeNotifierClientForTest["session"]["promptAsync"]>[0]
@@ -19,10 +21,23 @@ type SessionMessageStub = {
 }
 
 const FINAL_WAKE = "<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]\n</system-reminder>"
+const NEWER_WAKE = "<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]\nnewer wake\n</system-reminder>"
+
+function createDeferred<T>(): {
+  readonly promise: Promise<T>
+  readonly resolve: (value: T) => void
+} {
+  let resolve: (value: T) => void = () => {}
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve
+  })
+  return { promise, resolve }
+}
 
 function createNotifier(args: {
   readonly sessionMessagesImpl?: (attempt: number) => Promise<unknown>
   readonly promptAsyncImpl?: (call: PromptAsyncCall, attempt: number) => Promise<unknown>
+  readonly failureRequeueWindowMs?: number
 } = {}): {
   readonly notifier: ParentWakeNotifier
   readonly promptAsyncCalls: PromptAsyncCall[]
@@ -63,7 +78,7 @@ function createNotifier(args: {
       pendingRetryMs: 1_000,
       acceptedMessageSkewMs: 100,
       toolCallDeferMaxMs: 5_000,
-      failureRequeueWindowMs: 1,
+      failureRequeueWindowMs: args.failureRequeueWindowMs ?? 1,
       userMessageInProgressWindowMs: 0,
     },
   )
@@ -97,7 +112,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<v
 describe("ParentWakeNotifier late error recovery", () => {
   test("#given session.error arrives after the recovery window #when no assistant output accepted the wake #then the final wake is still requeued", async () => {
     // given
-    const { notifier, promptAsyncCalls } = createNotifier()
+    const { notifier, promptAsyncCalls } = createNotifier({ failureRequeueWindowMs: 500 })
     const sessionID = "parent-late-session-error-after-window"
     notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true)
 
@@ -105,7 +120,9 @@ describe("ParentWakeNotifier late error recovery", () => {
       await notifier.flushPendingParentWake(sessionID)
       expect(promptAsyncCalls).toHaveLength(1)
       expect(notifier.getDispatchedParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
-      await waitForTimer()
+      const firstTimer = notifier.getDispatchedParentWakeTimers().get(sessionID)
+      expect(firstTimer).toBeDefined()
+      await waitUntil(() => notifier.getDispatchedParentWakeTimers().get(sessionID) !== firstTimer, 1_000)
 
       // when
       const requeued = await notifier.requeueDispatchedParentWake(sessionID, "late session.error")
@@ -120,6 +137,92 @@ describe("ParentWakeNotifier late error recovery", () => {
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given accepted final wake never produces output #when a second recovery window elapses #then the wake is requeued", async () => {
+    // given
+    const { notifier, promptAsyncCalls } = createNotifier()
+    const sessionID = "parent-silent-dispatch-retry"
+    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true)
+
+    try {
+      await notifier.flushPendingParentWake(sessionID)
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(notifier.getDispatchedParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
+
+      // when/then: first window remains a late-error grace period.
+      await waitForTimer()
+      expect(notifier.getDispatchedParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
+      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+
+      // when/then: the next silent window retries the user-visible completion wake.
+      await waitUntil(() => notifier.getPendingParentWakes().has(sessionID), 600)
+      expect(notifier.getPendingParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
+      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
+      expect(notifier.getDispatchedParentWakeTimers().has(sessionID)).toBe(false)
+    } finally {
+      notifier.shutdown()
+      releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given stale recovery inspection resolves after a newer dispatch #when the old timer completes #then the newer wake is not cleared or requeued", async () => {
+    // given
+    const staleInspection = createDeferred<unknown>()
+    let staleInspectionStarted = false
+    const dispatchedTracker = new ParentWakeDispatchedTracker({
+      failureRequeueWindowMs: 10_000,
+      onFailureRequeueWindowElapsed: () => {},
+    }
+    )
+    const sessionID = "parent-stale-recovery-newer-dispatch"
+    const oldWake = {
+      promptContext: { agent: "sisyphus" },
+      notifications: [FINAL_WAKE],
+      shouldReply: true,
+      dispatchedAt: 1_000,
+    }
+    const newerWake = {
+      promptContext: { agent: "atlas" },
+      notifications: [NEWER_WAKE],
+      shouldReply: true,
+      dispatchedAt: 2_000,
+    }
+    const requeuedWakes: unknown[] = []
+    dispatchedTracker.trackWake(sessionID, oldWake, oldWake.dispatchedAt)
+
+    try {
+      const recoveryPromise = handleDispatchedParentWakeWindowElapsed({
+        sessionID,
+        wake: oldWake,
+        dispatchedTracker,
+        sessionInspector: {
+          hasAssistantOrToolOutputAfterDispatchedWake: async () => {
+            staleInspectionStarted = true
+            await staleInspection.promise
+            return false
+          },
+        },
+        requeueWake: (wake) => {
+          requeuedWakes.push(wake)
+        },
+        scheduleFlush: () => {
+          throw new Error("Stale recovery must not schedule a retry")
+        },
+      })
+      await waitUntil(() => staleInspectionStarted, 1_000)
+      dispatchedTracker.trackWake(sessionID, newerWake, newerWake.dispatchedAt)
+
+      // when
+      staleInspection.resolve(undefined)
+      await recoveryPromise
+
+      // then
+      expect(dispatchedTracker.getWake(sessionID)).toEqual(newerWake)
+      expect(requeuedWakes).toHaveLength(0)
+    } finally {
+      dispatchedTracker.shutdown()
     }
   })
 
