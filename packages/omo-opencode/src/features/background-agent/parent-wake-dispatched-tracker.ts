@@ -9,6 +9,7 @@ type ParentWakeDispatchedTrackerOptions = {
 export class ParentWakeDispatchedTracker {
   private dispatchedParentWakes: Map<string, PendingParentWake> = new Map()
   private dispatchedParentWakeTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
+  private missingOutputRecoveryWindows: Map<string, number> = new Map()
 
   constructor(private readonly options: ParentWakeDispatchedTrackerOptions) {}
 
@@ -34,6 +35,7 @@ export class ParentWakeDispatchedTracker {
       clearTimeout(timer)
       this.dispatchedParentWakeTimers.delete(sessionID)
     }
+    this.missingOutputRecoveryWindows.delete(sessionID)
     this.dispatchedParentWakes.delete(sessionID)
   }
 
@@ -50,6 +52,16 @@ export class ParentWakeDispatchedTracker {
       return
     }
     this.scheduleFailureWindowTimer(sessionID)
+  }
+
+  recordMissingOutputRecoveryWindow(sessionID: string, dispatchedAt: number | undefined): number {
+    const wake = this.dispatchedParentWakes.get(sessionID)
+    if (!wake || wake.dispatchedAt !== dispatchedAt) {
+      return 0
+    }
+    const nextCount = (this.missingOutputRecoveryWindows.get(sessionID) ?? 0) + 1
+    this.missingOutputRecoveryWindows.set(sessionID, nextCount)
+    return nextCount
   }
 
   private scheduleFailureWindowTimer(sessionID: string): void {
@@ -75,5 +87,6 @@ export class ParentWakeDispatchedTracker {
     }
     this.dispatchedParentWakeTimers.clear()
     this.dispatchedParentWakes.clear()
+    this.missingOutputRecoveryWindows.clear()
   }
 }
