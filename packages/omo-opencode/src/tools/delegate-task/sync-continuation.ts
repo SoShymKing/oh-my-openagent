@@ -1,6 +1,6 @@
 import type { DelegateTaskArgs, ToolContextWithMetadata } from "./types"
 import type { ExecutorContext, ParentContext, SessionMessage } from "./executor-types"
-import { isPlanFamily } from "./constants"
+import { getDeliverableTag, isPlanFamily } from "./constants"
 import { handedBackSyncSessions } from "../../features/claude-code-session-state"
 import { publishToolMetadata } from "../../features/tool-metadata-store"
 import { getTaskToastManager } from "../../features/task-toast-manager"
@@ -78,6 +78,7 @@ export async function executeSyncContinuation(
   const { client, syncPollTimeoutMs, sisyphusAgentConfig } = executorCtx
   const toastManager = getTaskToastManager()
   const hasActiveChildBackgroundTasks = executorCtx.manager?.hasActiveChildTasks?.bind(executorCtx.manager)
+  const hasPendingParentWake = executorCtx.manager?.hasPendingParentWake?.bind(executorCtx.manager)
   const continuationID = getTaskID(args)
   if (!continuationID) {
     throw new Error("task_id is required to continue a sync task")
@@ -168,6 +169,7 @@ export async function executeSyncContinuation(
   }
 
   try {
+    const deliverableTag = getDeliverableTag(resumeAgent)
     const pollError = await deps.pollSyncSession(ctx, client, {
       sessionID: continuationID,
       agentToUse: resumeAgent ?? "continue",
@@ -175,6 +177,7 @@ export async function executeSyncContinuation(
       taskId,
       anchorMessageCount,
       hasActiveChildBackgroundTasks,
+      hasPendingParentWake,
     }, syncPollTimeoutMs)
     if (pollError && shouldAttemptPollErrorRecovery(pollError)) {
       if (anchorMessageCount === undefined) {
@@ -182,6 +185,7 @@ export async function executeSyncContinuation(
       }
       const recoveredResult = await deps.fetchSyncResult(client, continuationID, anchorMessageCount, {
         strictAbortRecovery: true,
+        deliverableTag,
       })
       if (!recoveredResult.ok) {
         return pollError
@@ -206,7 +210,7 @@ ${buildTaskMetadataBlock({
       return pollError
     }
 
-    const result = await deps.fetchSyncResult(client, continuationID, anchorMessageCount)
+    const result = await deps.fetchSyncResult(client, continuationID, anchorMessageCount, { deliverableTag })
     if (!result.ok) {
       return result.error
     }
