@@ -750,6 +750,7 @@ describe("pollSyncSession", () => {
             "[ALL BACKGROUND TASKS COMPLETE]",
             "</system-reminder>",
             "<!-- OMO_INTERNAL_INITIATOR -->",
+            "<!-- OMO_INTERNAL_NOREPLY -->",
           ].join("\n"),
         },
       ],

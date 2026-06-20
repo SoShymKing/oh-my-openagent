@@ -1,19 +1,23 @@
 import type { ToolContextWithMetadata, OpencodeClient } from "./types"
 import type { SessionMessage } from "./executor-types"
 import { getDefaultSyncPollTimeoutMs, getTimingConfig } from "./timing"
+import { getTerminalSessionError, isSessionComplete } from "./sync-session-turns"
 import { log } from "../../shared/logger"
-import { hasInternalInitiatorMarker, normalizeSDKResponse } from "../../shared"
+import { isTerminalNoReplyUserMessage, normalizeSDKResponse } from "../../shared"
 import { consumeSyncSessionError } from "../../shared/sync-session-error-store"
 import { extractErrorMessage } from "../../features/background-agent/error-classifier"
 
-const NON_TERMINAL_FINISH_REASONS = new Set(["tool-calls", "unknown"])
-const PENDING_TOOL_PART_TYPES = new Set(["tool", "tool_use", "tool-call"])
+export { isSessionComplete } from "./sync-session-turns"
+
 const ACTIVE_SESSION_STATUSES = new Set(["busy", "retry", "running"])
 const ALL_BACKGROUND_TASKS_COMPLETE_MARKER = "[ALL BACKGROUND TASKS COMPLETE]"
 const CHILD_WAKE_GRACE_MS = 5_000
 
 function wait(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+  const sharedBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
+  const typedArray = new Int32Array(sharedBuffer)
+  const result = Atomics.waitAsync(typedArray, 0, 0, milliseconds)
+  return result.async ? result.value.then(() => undefined) : Promise.resolve()
 }
 
 function abortSyncSession(client: OpencodeClient, sessionID: string, reason: string): void {
@@ -38,22 +42,9 @@ async function fetchSessionMessages(
   return Array.isArray(rawData) ? (rawData as SessionMessage[]) : []
 }
 
-function getTerminalSessionError(messages: SessionMessage[]): string | null {
-  const lastAssistant = getLastAssistant(messages)
-  const lastUser = [...messages].reverse().find((msg) => msg.info?.role === "user")
-  if (lastUser?.info?.id && lastAssistant?.info?.id && lastAssistant.info.id <= lastUser.info.id) {
-    return null
-  }
-  if (!lastAssistant?.info || !("error" in lastAssistant.info)) {
-    return null
-  }
-
-  const errorMessage = extractErrorMessage((lastAssistant.info as { error?: unknown }).error)
-  return errorMessage && errorMessage.length > 0 ? errorMessage : "Session error"
-}
-
 function getMessageText(message: SessionMessage): string {
   return (message.parts ?? [])
+    .filter((part) => part.type === "text")
     .map((part) => part.text ?? "")
     .filter((text) => text.length > 0)
     .join("\n")
@@ -66,7 +57,7 @@ function getLastAssistant(messages: SessionMessage[]): SessionMessage | undefine
 function isInternalAllCompleteWake(message: SessionMessage | undefined): boolean {
   if (message?.info?.role !== "user") return false
   const text = getMessageText(message)
-  return hasInternalInitiatorMarker(text) && text.includes(ALL_BACKGROUND_TASKS_COMPLETE_MARKER)
+  return isTerminalNoReplyUserMessage(message) && text.includes(ALL_BACKGROUND_TASKS_COMPLETE_MARKER)
 }
 
 function getTerminalAssistantBeforeInternalAllCompleteWake(
@@ -78,24 +69,6 @@ function getTerminalAssistantBeforeInternalAllCompleteWake(
   const messagesBeforeWake = messages.slice(0, -1)
   if (!isSessionComplete(messagesBeforeWake)) return undefined
   return getLastAssistant(messagesBeforeWake)
-}
-
-export function isSessionComplete(messages: SessionMessage[]): boolean {
-  let lastUser: SessionMessage | undefined
-  let lastAssistant: SessionMessage | undefined
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]
-    if (!lastAssistant && msg.info?.role === "assistant") lastAssistant = msg
-    if (!lastUser && msg.info?.role === "user") lastUser = msg
-    if (lastUser && lastAssistant) break
-  }
-
-  if (!lastAssistant?.info?.finish) return false
-  if (NON_TERMINAL_FINISH_REASONS.has(lastAssistant.info.finish)) return false
-  if (lastAssistant.parts?.some((part) => part.type && PENDING_TOOL_PART_TYPES.has(part.type))) return false
-  if (!lastUser?.info?.id || !lastAssistant?.info?.id) return false
-  return lastUser.info.id < lastAssistant.info.id
 }
 
 const DEFAULT_MAX_ASSISTANT_TURNS = 300
@@ -172,11 +145,12 @@ export async function pollSyncSession(
           finalMessages = await fetchSessionMessages(client, input.sessionID)
           break
         } catch (error) {
+          const errorMessage = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
           log("[task] Final messages fetch failed after abort, retrying", {
             sessionID: input.sessionID,
             attempt,
             maxAttempts: abortFetchAttempts,
-            error: String(error),
+            error: errorMessage,
           })
           if (attempt < abortFetchAttempts) {
             await wait(syncTiming.POLL_INTERVAL_MS)
@@ -241,12 +215,19 @@ export async function pollSyncSession(
     try {
       messages = await fetchSessionMessages(client, input.sessionID)
     } catch (error) {
-      log("[task] Poll messages fetch failed, retrying", { sessionID: input.sessionID, error: String(error) })
+      const errorMessage = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      log("[task] Poll messages fetch failed, retrying", { sessionID: input.sessionID, error: errorMessage })
       continue
     }
 
     if (input.anchorMessageCount !== undefined && messages.length <= input.anchorMessageCount) {
       continue
+    }
+
+    const sessionError = getTerminalSessionError(messages)
+    if (sessionError) {
+      log("[task] Poll detected terminal session error", { sessionID: input.sessionID, sessionError })
+      return sessionError
     }
 
     const internalWakeAssistant = getTerminalAssistantBeforeInternalAllCompleteWake(messages)
@@ -263,12 +244,6 @@ export async function pollSyncSession(
 
     if (activeSessionStatus) {
       continue
-    }
-
-    const sessionError = getTerminalSessionError(messages)
-    if (sessionError) {
-      log("[task] Poll detected terminal session error", { sessionID: input.sessionID, sessionError })
-      return sessionError
     }
 
     if (isSessionComplete(messages)) {
