@@ -20,11 +20,13 @@ export class ParentWakeNotifier {
   private readonly dispatchedTracker: ParentWakeDispatchedTracker
   private readonly sessionInspector: ParentWakeSessionInspector
   private readonly flushRunner: ParentWakeFlushRunner
+  private readonly onPendingWakeRequeued?: (sessionID: string) => void
 
   constructor(
     deps: ParentWakeNotifierDeps,
     options: ParentWakeNotifierOptions,
   ) {
+    this.onPendingWakeRequeued = deps.onPendingWakeRequeued
     this.pendingQueue = new ParentWakePendingQueue({
       pendingRetryMs: options.pendingRetryMs,
       enqueueNotificationForParent: deps.enqueueNotificationForParent,
@@ -37,7 +39,7 @@ export class ParentWakeNotifier {
           wake,
           dispatchedTracker: this.dispatchedTracker,
           sessionInspector: this.sessionInspector,
-          requeueWake: (wake) => this.requeueWake(sessionID, wake),
+          requeueWake: (latestWake) => this.requeueWake(sessionID, latestWake),
           scheduleFlush: () => this.schedulePendingParentWakeFlush(sessionID),
         }).catch((error: unknown) => {
           logParentWakeWindowRecoveryError(
@@ -179,6 +181,7 @@ export class ParentWakeNotifier {
 
   private requeueWake(sessionID: string, latestWake: PendingParentWake): void {
     this.pendingQueue.requeueWake(sessionID, latestWake)
+    this.onPendingWakeRequeued?.(sessionID)
   }
 
   private async shouldDeferParentWakeForSessionHistory(
