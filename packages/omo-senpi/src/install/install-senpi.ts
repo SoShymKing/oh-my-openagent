@@ -33,8 +33,24 @@ type SettingsRecord = Record<string, unknown>
 
 const REQUIRED_PLUGIN_ARTIFACTS = [
   join("extensions", "omo.js"),
+  join("skills", "ast-grep", "SKILL.md"),
+  join("skills", "coding-agent-sessions", "SKILL.md"),
+  join("skills", "debugging", "SKILL.md"),
+  join("skills", "frontend", "SKILL.md"),
+  join("skills", "git-master", "SKILL.md"),
+  join("skills", "init-deep", "SKILL.md"),
+  join("skills", "lsp-setup", "SKILL.md"),
+  join("skills", "programming", "SKILL.md"),
+  join("skills", "refactor", "SKILL.md"),
+  join("skills", "remove-ai-slops", "SKILL.md"),
+  join("skills", "review-work", "SKILL.md"),
+  join("skills", "start-work", "SKILL.md"),
+  join("skills", "ultimate-browsing", "SKILL.md"),
   join("skills", "ultrawork", "SKILL.md"),
   join("skills", "ulw-loop", "SKILL.md"),
+  join("skills", "ulw-plan", "SKILL.md"),
+  join("skills", "ulw-research", "SKILL.md"),
+  join("skills", "visual-qa", "SKILL.md"),
   join("runtime", "lsp-daemon", "dist", "cli.js"),
   join("runtime", "lsp-daemon", "dist", "index.js"),
   join("runtime", "lsp-daemon", "dist", "index.d.ts"),
@@ -45,12 +61,21 @@ const REQUIRED_PLUGIN_ARTIFACTS = [
   join("scripts", "install.mjs"),
 ] as const
 
+const LEGACY_BUILTIN_SHADOW_PACKAGES = [
+  join("packages", "pi-goal"),
+  join("packages", "pi-webfetch"),
+] as const
+
 export async function runSenpiInstaller(options: SenpiInstallOptions = {}): Promise<SenpiInstallResult> {
   const context = resolveInstallContext(options)
   await ensurePluginArtifacts(context)
   const settings = await readSettings(context.settingsPath)
   const before = JSON.stringify(settings)
-  const packages = dedupePackages(readPackages(settings))
+  const packages = removeLegacyBuiltinShadows(
+    dedupePackages(readPackages(settings)),
+    context.repoRoot,
+    context.agentDir,
+  )
   if (!packages.includes(context.pluginPath)) packages.push(context.pluginPath)
   settings.packages = packages
   const backupPath = await writeSettingsAtomically(context.settingsPath, settings)
@@ -120,6 +145,7 @@ async function ensurePluginArtifacts(context: ReturnType<typeof resolveInstallCo
   }
 
   await context.runCommand("node", [join(context.pluginPath, "scripts", "build-extension.mjs")], { cwd: context.repoRoot })
+  await context.runCommand("node", [join("packages", "omo-codex", "plugin", "scripts", "materialize-shared-upstreams.mjs")], { cwd: context.repoRoot })
   await context.runCommand("node", [join(context.pluginPath, "scripts", "sync-skills.mjs")], { cwd: context.repoRoot })
   await context.runCommand("node", [join(context.pluginPath, "scripts", "build-install.mjs")], { cwd: context.repoRoot })
   await context.runCommand("node", [join(context.pluginPath, "scripts", "stage-lsp-daemon-runtime.mjs")], { cwd: context.repoRoot })
@@ -167,6 +193,11 @@ function readPackages(settings: SettingsRecord): string[] {
 
 function dedupePackages(packages: readonly string[]): string[] {
   return [...new Set(packages)]
+}
+
+function removeLegacyBuiltinShadows(packages: readonly string[], repoRoot: string, agentDir: string): string[] {
+  const shadowPaths = new Set(LEGACY_BUILTIN_SHADOW_PACKAGES.map((path) => resolve(repoRoot, path)))
+  return packages.filter((entry) => !shadowPaths.has(resolve(agentDir, entry)))
 }
 
 async function writeSettingsAtomically(settingsPath: string, settings: SettingsRecord): Promise<string> {

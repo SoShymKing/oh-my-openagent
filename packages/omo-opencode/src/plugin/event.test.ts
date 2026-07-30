@@ -1457,7 +1457,7 @@ describe("createEventHandler - retry dedupe lifecycle", () => {
 		const retryStatus = {
 			type: "retry",
 			attempt: 1,
-			message: "All credentials for model claude-opus-4-7-thinking are cooling down [retrying in 7m 56s attempt #1]",
+			message: "All credentials for model claude-opus-4-8-thinking are cooling down [retrying in 7m 56s attempt #1]",
 			next: 476,
 		} as const
 
@@ -1469,7 +1469,7 @@ describe("createEventHandler - retry dedupe lifecycle", () => {
 						id: "msg_user_retry_rearm",
 						sessionID,
 						role: "user",
-						modelID: "claude-opus-4-7-thinking",
+						modelID: "claude-opus-4-8-thinking",
 						providerID: "anthropic",
 						agent: "Sisyphus - Ultraworker",
 					},
@@ -1491,7 +1491,7 @@ describe("createEventHandler - retry dedupe lifecycle", () => {
 			{
 				sessionID,
 				agent: "sisyphus",
-				model: { providerID: "anthropic", modelID: "claude-opus-4-7-thinking" },
+				model: { providerID: "anthropic", modelID: "claude-opus-4-8-thinking" },
 			},
 			firstOutput,
 		)
@@ -1506,10 +1506,28 @@ describe("createEventHandler - retry dedupe lifecycle", () => {
 		}))
 		await eventHandler(asEventHandlerInput({
 			event: {
+				type: "message.updated",
+				properties: {
+					info: {
+						id: "msg_user_retry_rearm_opus5",
+						sessionID,
+						role: "user",
+						modelID: "claude-opus-5",
+						providerID: "anthropic",
+						agent: "Sisyphus - Ultraworker",
+					},
+				},
+			},
+		}))
+		await eventHandler(asEventHandlerInput({
+			event: {
 				type: "session.status",
 				properties: {
 					sessionID,
-					status: retryStatus,
+					status: {
+						...retryStatus,
+						message: "All credentials for model claude-opus-5 are cooling down [retrying in 7m 56s attempt #1]",
+					},
 				},
 			},
 		}))

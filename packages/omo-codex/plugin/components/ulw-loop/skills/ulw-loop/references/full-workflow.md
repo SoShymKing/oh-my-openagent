@@ -113,9 +113,9 @@ If `ULW_LOOP_CLI` is empty, open the durable notepad first, record the missing C
 
 Run one form:
 ```sh
-omo ulw-loop create-goals --brief "<brief>" --json
-omo ulw-loop create-goals --brief-file <path> --json
-cat <brief> | omo ulw-loop create-goals --from-stdin --json
+omo ulw-loop create-goals --brief "<brief>" [--validation-batch-json <json-or-path>] --json
+omo ulw-loop create-goals --brief-file <path> [--validation-batch-json <json-or-path>] --json
+cat <brief> | omo ulw-loop create-goals --from-stdin [--validation-batch-json <json-or-path>] --json
 ```
 If the existing aggregate is already complete, do not steer or force the
 completed default state for unrelated new work. Start a fresh run with
@@ -145,7 +145,7 @@ Read pending goals, criteria IDs, current ledger head, blockers, and aggregate C
 Loop per goal. Cap at 5 cycles per goal. Cap identical same-criterion failures at 3.
 
 ### Acquire Next Goal
-1. Run `omo ulw-loop complete-goals --json` and read the handoff, including criteria.
+1. Run `omo ulw-loop complete-goals --json` and read the handoff, including criteria. After the first goal starts, a successful complete checkpoint normally prints the next goal instruction directly; use `complete-goals` as the manual fallback/resume path.
 2. Call `get_goal` and inspect active Codex state.
 3. Apply this table exactly:
 
@@ -177,7 +177,7 @@ Loop per goal. Cap at 5 cycles per goal. Cap identical same-criterion failures a
 ### Goal Completion
 1. Non-final aggregate goal: confirm every `essential` criterion is `pass`; non-essential criteria may remain pending. Final aggregate goal: confirm every criterion across the whole plan is `pass`.
 2. Call `get_goal` for a fresh snapshot.
-3. Run `omo ulw-loop checkpoint --goal-id <id> --status complete --evidence "<criteria evidence summary>" --codex-goal-json <snapshot> --json`.
+3. Run `omo ulw-loop checkpoint --goal-id <id> --status complete --evidence "<criteria evidence summary>" --codex-goal-json <snapshot> --json`; on success it auto-starts and prints the next eligible goal unless `--no-advance` is passed.
 4. If blocked or failed, checkpoint with `--status blocked` or `--status failed` and include diagnosis evidence.
 5. If this is the final goal, run the final quality gate first and pass `--quality-gate-json`.
 
@@ -187,7 +187,7 @@ Trigger only for the final aggregate goal after every criterion in every goal is
 2. FREEZE first — no more edits or rebases. At the frozen HEAD, re-run Manual-QA for any PASS criterion whose stamped tree differs from `git rev-parse --short "HEAD^{tree}"`, so every criterion is proven on the frozen tree; each artifact exists and is non-empty.
 3a. Spawn lazycodex-code-reviewer and lazycodex-qa-executor in parallel (`fork_context: false` on v1; `fork_turns: "none"` on v2) with brief, goals, desired outcome, diff, evidence; wait for BOTH and confirm their report artifacts exist on disk.
 3b. Only then spawn lazycodex-gate-reviewer with those artifact paths.
-3c. The gate's approval binds to the frozen tree and covers its three lanes — code quality, hands-on QA, and goal verification. A later rebase or amend that keeps the tree identical keeps the approval; changed content needs fresh review of the delta.
+3c. The gate's approval binds to the frozen tree and full commit SHA and covers its three lanes — code quality, hands-on QA, and goal verification. Immediately append one durable `.omo/ulw-loop/ledger.jsonl` record per passing lane with the lane name, full SHA, verdict, and report artifact/source. Before reuse after continuation or compaction, re-read the ledger and require the exact lane/SHA pair; memory or an unstamped report is not coverage. A later rebase or amend that keeps the tree identical still has a new SHA and needs fresh lane stamps; changed content needs fresh review of the delta.
 4. Treat timeout, missing deliverable, ack-only, `BLOCKED:`, or inconclusive review as a blocker. Any fix restarts the freeze at the new HEAD: re-run ONLY the proofs it invalidated and stamp the fresh output — never regenerate all evidence or relabel stale output to HEAD — re-review the delta at most TWICE; then record-review-blockers (step 5) and surface to the user.
 5. If review remains blocked, run `omo ulw-loop record-review-blockers --goal-id <id> --title "<...>" --objective "<...>" --evidence "<review findings>" --codex-goal-json <snapshot> --json`.
 6. If clean, checkpoint final completion:
@@ -219,7 +219,9 @@ Use steering only for structured evidence-backed mutation. Reject natural-langua
 | annotate_ledger | Audit-only note | `--evidence`, `--rationale` |
 | mark_blocked_superseded | Old story replaced by new evidence | `--goal-id`, `--replacements?`, `--evidence`, `--rationale` |
 
-Command form: `omo ulw-loop steer --kind <kind> [<kind-specific-fields>] --evidence "<...>" --rationale "<...>" --json`.
+Command form: `omo ulw-loop steer --kind <kind> [<kind-specific-fields>] --evidence "<...>" --rationale "<...>" --json`. For multiple evidence-backed plan-shape changes discovered together, pass `--proposals-json <json-or-path>` with an array of proposals; the batch applies atomically or rejects without partial plan mutation.
+
+Validation batches are optional aggregate-mode review boundaries declared at create time with `--validation-batch-json`. A batch-final member requires all other members resolved, all member criteria pass, and a member-spanning quality gate; split/supersede steering keeps batch membership updated.
 Structured prompt directives accepted: `OMO_ULW_LOOP_STEER: { ... }`, `omo.ulw-loop.steer: {...}`, `omo ulw-loop steer: {...}`.
 
 ## Constraints

@@ -51,21 +51,23 @@ describe("LspClient diagnostics freshness", () => {
 					{
 						trigger: "didChange",
 						diagnostics: [diagnostic("post-generation-versionless")],
+						awaitClientDelivery: true,
 					},
 				],
 			},
 			{ diagnosticsFreshnessTimeoutMs: 80, versionlessPublishQuiescenceMs: 20 },
 		);
 		await context.client.openFile(context.source);
-		await waitForEventCount(
+		const versionlessDelivery = waitForEventCount(
 			context.events,
-			(event) => event.type === "serverNotification" && event.method === "textDocument/publishDiagnostics",
+			(event) => event.type === "clientResponse" && event.method === "workspace/configuration",
 			1,
 		);
+		const startedAt = Date.now();
 		writeFileSync(context.source, "const after = 1;\n", "utf-8");
 		await context.client.openFile(context.source);
+		expect(await versionlessDelivery).toHaveLength(1);
 
-		const startedAt = Date.now();
 		const result = await context.client.diagnostics(context.source);
 		const elapsedMs = Date.now() - startedAt;
 
@@ -104,14 +106,21 @@ describe("LspClient diagnostics freshness", () => {
 						trigger: "didChange",
 						version: 1,
 						diagnostics: [diagnostic("stale")],
+						awaitClientDelivery: true,
 					},
 				],
 			},
-			{ diagnosticsFreshnessTimeoutMs: 30, versionlessPublishQuiescenceMs: 5 },
+			{ diagnosticsFreshnessTimeoutMs: 100, versionlessPublishQuiescenceMs: 5 },
 		);
 		await stale.client.openFile(stale.source);
+		const staleDelivery = waitForEventCount(
+			stale.events,
+			(event) => event.type === "clientResponse" && event.method === "workspace/configuration",
+			1,
+		);
 		writeFileSync(stale.source, "const stale = 1;\n", "utf-8");
 		await stale.client.openFile(stale.source);
+		expect(await staleDelivery).toHaveLength(1);
 
 		const staleResult = await stale.client.diagnostics(stale.source);
 
@@ -127,14 +136,21 @@ describe("LspClient diagnostics freshness", () => {
 						trigger: "didChange",
 						version: 3,
 						diagnostics: [diagnostic("future")],
+						awaitClientDelivery: true,
 					},
 				],
 			},
-			{ diagnosticsFreshnessTimeoutMs: 30, versionlessPublishQuiescenceMs: 5 },
+			{ diagnosticsFreshnessTimeoutMs: 100, versionlessPublishQuiescenceMs: 5 },
 		);
 		await future.client.openFile(future.source);
+		const futureDelivery = waitForEventCount(
+			future.events,
+			(event) => event.type === "clientResponse" && event.method === "workspace/configuration",
+			1,
+		);
 		writeFileSync(future.source, "const future = 1;\n", "utf-8");
 		await future.client.openFile(future.source);
+		expect(await futureDelivery).toHaveLength(1);
 
 		const futureResult = await future.client.diagnostics(future.source);
 
@@ -258,4 +274,64 @@ describe("LspClient diagnostics freshness", () => {
 		expect(result.transientError?.kind).toBe("freshness_timeout");
 		expect(cancel?.params).toEqual({ id: request?.id });
 	});
+
+	it("#given a server without pull support that never publishes diagnostics #when diagnostics run on a clean file #then the request resolves clean after the freshness window instead of reporting a timeout", async () => {
+		const context = await harness.makeClient(
+			{},
+			{ diagnosticsFreshnessTimeoutMs: 60, versionlessPublishQuiescenceMs: 5 },
+		);
+
+		const startedAt = Date.now();
+		const result = await context.client.diagnostics(context.source);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(result.transientError).toBeUndefined();
+		expect(result.items).toEqual([]);
+		// The full freshness window is still honored so a slow publisher can win.
+		expect(elapsedMs).toBeGreaterThanOrEqual(45);
+	});
+
+	it("#given a pull-supported server that cached diagnostics for an older document version #when the file changes and a later pull is rejected as unsupported without any publish #then the fallback resolves empty instead of returning the stale cached diagnostics", async () => {
+		const context = await harness.makeClient(
+			{
+				capabilities: { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } },
+				diagnosticResponses: [
+					{ report: { kind: "full", resultId: "v1", items: [diagnostic("stale-pull")] } },
+					{ error: { code: -32601, message: "Method not found" } },
+				],
+			},
+			{ diagnosticsFreshnessTimeoutMs: 500, versionlessPublishQuiescenceMs: 5 },
+		);
+
+		const first = await context.client.diagnostics(context.source);
+		expect(first.items).toEqual([diagnostic("stale-pull")]);
+
+		writeFileSync(context.source, "const changed = 1;\n");
+		await context.client.openFile(context.source);
+
+		const second = await context.client.diagnostics(context.source);
+		expect(second.transientError).toBeUndefined();
+		expect(second.items).toEqual([]);
+	});
+
+	it("#given a pull-supported server with a current cached pull report #when a later pull is rejected as unsupported without any publish and the document is unchanged #then the fallback resolves with the current cached diagnostics", async () => {
+		const context = await harness.makeClient(
+			{
+				capabilities: { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } },
+				diagnosticResponses: [
+					{ report: { kind: "full", resultId: "v1", items: [diagnostic("cached-full")] } },
+					{ error: { code: -32601, message: "Method not found" } },
+				],
+			},
+			{ diagnosticsFreshnessTimeoutMs: 500, versionlessPublishQuiescenceMs: 5 },
+		);
+
+		const first = await context.client.diagnostics(context.source);
+		expect(first.items).toEqual([diagnostic("cached-full")]);
+
+		const second = await context.client.diagnostics(context.source);
+		expect(second.transientError).toBeUndefined();
+		expect(second.items).toEqual([diagnostic("cached-full")]);
+	});
+
 });

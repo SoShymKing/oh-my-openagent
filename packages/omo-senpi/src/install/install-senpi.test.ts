@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 import { runSenpiInstaller, runSenpiUninstaller } from "./install-senpi"
 
 const repoRoot = resolve(import.meta.dir, "../../../..")
@@ -28,8 +28,29 @@ async function makePluginFixture(options: { readonly runtime?: boolean } = { run
   tempDirs.push(pluginPath)
   await writeFixtureFile(join(pluginPath, "package.json"), JSON.stringify({ name: "@code-yeongyu/omo-senpi" }))
   await writeFixtureFile(join(pluginPath, "extensions", "omo.js"), "export default {}\n")
-  await writeFixtureFile(join(pluginPath, "skills", "ultrawork", "SKILL.md"), "# Ultrawork\n")
-  await writeFixtureFile(join(pluginPath, "skills", "ulw-loop", "SKILL.md"), "# ULW Loop\n")
+  const requiredSkillNames = [
+    "ast-grep",
+    "coding-agent-sessions",
+    "debugging",
+    "frontend",
+    "git-master",
+    "init-deep",
+    "lsp-setup",
+    "programming",
+    "refactor",
+    "remove-ai-slops",
+    "review-work",
+    "start-work",
+    "ultimate-browsing",
+    "ultrawork",
+    "ulw-loop",
+    "ulw-plan",
+    "ulw-research",
+    "visual-qa",
+  ]
+  for (const skillName of requiredSkillNames) {
+    await writeFixtureFile(join(pluginPath, "skills", skillName, "SKILL.md"), `# ${skillName}\n`)
+  }
   await writeFixtureFile(join(pluginPath, "scripts", "install.mjs"), "#!/usr/bin/env node\n")
   if (options.runtime !== false) {
     await writeFixtureFile(join(pluginPath, "runtime", "lsp-daemon", "dist", "cli.js"), "console.log('cli')\n")
@@ -93,6 +114,32 @@ describe("runSenpiInstaller", () => {
     expect(settings.nested).toEqual({ enabled: true })
     expect(settings.packages).toEqual(["keep-me", pluginPath])
     expect(await backupFiles(agentDir)).toHaveLength(1)
+  })
+
+  test("#given legacy goal and webfetch packages #when installing #then builtin-shadowing entries are removed", async () => {
+    // given
+    const agentDir = await makeAgentDir()
+    const pluginPath = await makePluginFixture()
+    const legacyGoal = join(repoRoot, "packages", "pi-goal")
+    const legacyWebfetch = join(repoRoot, "packages", "pi-webfetch")
+    await writeFile(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        packages: [
+          "keep-me",
+          relative(agentDir, legacyGoal),
+          legacyWebfetch,
+          pluginPath,
+        ],
+      }),
+    )
+
+    // when
+    await runSenpiInstaller({ env: { SENPI_CODING_AGENT_DIR: agentDir }, repoRoot, pluginPath })
+
+    // then
+    const settings = await readSettings(agentDir)
+    expect(settings.packages).toEqual(["keep-me", pluginPath])
   })
 
   test("#given packed plugin missing runtime #when installing #then settings stay unchanged and no backup is written", async () => {
