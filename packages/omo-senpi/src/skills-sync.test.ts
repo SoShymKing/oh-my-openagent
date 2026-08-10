@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
+import { BUILTIN_SKILL_NAMES } from "./components/telemetry/product-identity"
 
 const repoRoot = join(import.meta.dir, "..", "..", "..")
 const skillsRoot = join(repoRoot, "packages", "omo-senpi", "plugin", "skills")
@@ -8,6 +9,7 @@ const skillsRoot = join(repoRoot, "packages", "omo-senpi", "plugin", "skills")
 const expectedSkillNames = [
   "ast-grep",
   "coding-agent-sessions",
+  "data-scientist",
   "debugging",
   "frontend",
   "git-master",
@@ -34,6 +36,7 @@ const CODEX_DERIVED_SKILL_NAMES: Record<string, true> = {}
 const NATIVE_SENPI_SKILL_NAMES: Record<string, true> = {
   "give-me-tips": true,
   hyperplan: true,
+  "init-deep": true,
   ultrawork: true,
   "ulw-loop": true,
   "ulw-research": true,
@@ -92,6 +95,13 @@ function extractFrontmatterField(frontmatter: string, field: string): string | u
 }
 
 describe("OMO Senpi scoped skill sync", () => {
+  test("#given the telemetry builtin skill allowlist #when compared with packaged skills #then it stays exact and frozen", () => {
+    const telemetrySkillNames: readonly string[] = BUILTIN_SKILL_NAMES
+    expect(Object.isFrozen(BUILTIN_SKILL_NAMES)).toBe(true)
+    expect(BUILTIN_SKILL_NAMES.length).toBeGreaterThan(0)
+    expect([...telemetrySkillNames].sort()).toEqual(listDirectoryNames(skillsRoot))
+  })
+
   test("#given synced skill output #when inspected #then exactly 20 roots exist with valid names", () => {
     const actualNames = listDirectoryNames(skillsRoot)
     expect(actualNames).toEqual([...expectedSkillNames].sort())
@@ -116,7 +126,7 @@ describe("OMO Senpi scoped skill sync", () => {
       const name = extractFrontmatterField(frontmatter, "name")
       expect(name, `${relative(repoRoot, skillFile)} frontmatter name must equal ${skillName}`).toBe(skillName)
 
-      const descriptionLine = frontmatter.match(/^description:\\s*(.*)$/m)?.[0] ?? ""
+      const descriptionLine = frontmatter.match(/^description:\s*(.*)$/m)?.[0] ?? ""
       expect(
         descriptionLine.length,
         `${relative(repoRoot, skillFile)} description line must be <= 1024 chars`,
@@ -186,9 +196,41 @@ describe("OMO Senpi scoped skill sync", () => {
     expect(content.includes("codex:<session_id>"), "start-work must not reference codex:<session_id>").toBe(false)
   })
 
+  test("#given start-work skill #when inspected #then the senpi banner advertises senpi watcher tools, not a codex wait idiom", () => {
+    const skillFile = join(skillsRoot, "start-work", "SKILL.md")
+    const content = readFileSync(skillFile, "utf8")
+
+    expect(/\bmonitor\b/.test(content), "start-work must name the senpi tool that arms a lane watcher").toBe(true)
+    expect(/\bkill_bash\b/.test(content), "start-work must name the senpi tool that tears a watcher down").toBe(true)
+    expect(/\bwait_agent\b/.test(content), "start-work must not carry the codex wait_agent polling idiom").toBe(false)
+  })
+
   test("#given synced skill tree #when inspected #then no codex-only display metadata is packaged", () => {
     const openaiFiles = listFiles(skillsRoot).filter((file) => file.endsWith("agents/openai.yaml"))
     expect(openaiFiles.map((file) => relative(repoRoot, file))).toEqual([])
+  })
+
+  test("#given ported orchestration skills #when scanned #then no foreign-harness delegation guidance survives", () => {
+    const portedOrchestrationSkillNames = ["start-work", "ulw-plan"] as const
+    const foreignDelegationPattern = /\b(?:multi_agent|spawn_agent|lazycodex)\b/i
+    const leaks: string[] = []
+
+    for (const skillName of portedOrchestrationSkillNames) {
+      const skillRoot = join(skillsRoot, skillName)
+      if (!existsSync(skillRoot)) continue
+
+      for (const file of listFiles(skillRoot)) {
+        const content = readFileSync(file, "utf8")
+        if (foreignDelegationPattern.test(content)) {
+          leaks.push(`${relative(repoRoot, file)}: foreign delegation tool guidance`)
+        }
+        if (skillName === "ulw-plan" && /\boracle\b/i.test(content)) {
+          leaks.push(`${relative(repoRoot, file)}: oracle reviewer does not exist in omo-senpi`)
+        }
+      }
+    }
+
+    expect(leaks).toEqual([])
   })
 
   test("#given frontend skill #when inspected #then materialized design references exist", () => {

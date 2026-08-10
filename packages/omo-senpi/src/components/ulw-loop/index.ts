@@ -7,14 +7,14 @@ const STATUS_ARGS = ["ulw-loop", "status", "--json"] as const
 const CONTINUATION_LIMIT = 8
 const STEERING_REMINDER = [
   "<omo-senpi-ulw-loop>",
-  "An active omo ulw-loop run is present in this working directory.",
-  "Before continuing, inspect `omo ulw-loop status --json` and use the existing .omo/ulw-loop ledger as the source of truth.",
+  "An active omo-agent-toolkit ulw-loop run is present in this working directory.",
+  "Before continuing, inspect `omo-agent-toolkit ulw-loop status --json` and use the existing .omo/ulw-loop ledger as the source of truth.",
   "Continue the current ulw-loop story with evidence-bound execution; do not start unrelated work until the active run is complete or checkpointed.",
   "</omo-senpi-ulw-loop>",
 ].join("\n")
 const CONTINUATION_PROMPT = [
-  "Continue the active omo ulw-loop run.",
-  "Run `omo ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.",
+  "Continue the active omo-agent-toolkit ulw-loop run.",
+  "Run `omo-agent-toolkit ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.",
 ].join("\n")
 
 export interface UlwLoopComponentOptions {
@@ -115,7 +115,7 @@ export function createUlwLoopComponent(options: UlwLoopComponentOptions = {}): O
       })
 
       pi.on("tool_result", async (payload, eventCtx) => {
-        if (!isGoalToolResult(payload)) return
+        if (!shouldRefreshFooterAfterToolResult(payload)) return
         const status = await readActiveStatus(omoBin, runCommand, cwdFromContext(eventCtx), ctx)
         footerStatus.sync(eventCtx, status?.active ?? false)
       })
@@ -213,9 +213,13 @@ function isUserSourcedInput(value: InputEventLike): boolean {
   return value.source !== "extension"
 }
 
-function isGoalToolResult(value: unknown): boolean {
+function shouldRefreshFooterAfterToolResult(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return value["toolName"] === "create_goal" || value["toolName"] === "update_goal"
+  const toolName = value["toolName"]
+  return toolName === "create_goal"
+    || toolName === "update_goal"
+    || toolName === "bash"
+    || toolName === "interactive_bash"
 }
 
 function extractSessionId(eventCtx: unknown): string | undefined {

@@ -10,6 +10,7 @@ type WorkflowExpectation = {
 }
 
 const workflowDirectory = ".github/workflows"
+const WINDOWS_INTEGRATION_TEST_TIMEOUT = process.platform === "win32" ? 20_000 : 5_000
 
 const workflowExpectations = [
   {
@@ -22,6 +23,7 @@ const workflowExpectations = [
       "senpi-compatibility",
       "lazycodex-published-smoke",
       "build",
+      "omo-ai-payload-check",
       "auto-commit-schema",
       "draft-release",
     ],
@@ -204,5 +206,5 @@ describe("GitHub workflow job summaries", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, WINDOWS_INTEGRATION_TEST_TIMEOUT)
 })

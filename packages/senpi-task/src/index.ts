@@ -1,5 +1,6 @@
 // allow: SIZE_OK - package-root public API barrel contains re-exports only and intentionally preserves one stable root import surface.
 export {
+  isSpawnSpecV1,
   RESIDENCY_STATES,
   RESOLVED_MODEL_SOURCES,
   TASK_STATUSES,
@@ -9,14 +10,18 @@ export {
   transitionTaskRecord,
 } from "./state"
 export type {
+  LegacyProcessSpawnSpec,
   Messageability,
+  PendingSteeringEntry,
   ResidencyState,
   ResolvedModelRecord,
   ResolvedModelSource,
+  SpawnSpecV1,
   TaskNotification,
   TaskRecord,
   TaskRecordInput,
   TaskRunStats,
+  TaskSpawnSpec,
   TaskStatus,
   TaskTransition,
   TaskTransitionAudit,
@@ -32,11 +37,16 @@ export type {
 } from "./store"
 export {
   composeStatusLine,
+  formatLiveSpend,
+  formatRunSpend,
   formatStatusTarget,
+  formatTargetIdentity,
+  formatTargetWithModel,
   taskIdentityLabel,
   toolCountSuffix,
 } from "./status-line"
 export type { StatusLineInput, StatusLineStats, StatusTargetInput, TaskIdentityInput } from "./status-line"
+export { TASK_SUMMARY_MAX_LENGTH, clampTaskSummary } from "./task-summary"
 export { assistantLastLine, formatToolActivity } from "./progress"
 export { createMinimalSenpiResourceLoader } from "./senpi/minimal-resource-loader"
 export type { MinimalSenpiResourceLoaderOptions } from "./senpi/minimal-resource-loader"
@@ -68,6 +78,7 @@ export {
   CATEGORY_DESCRIPTIONS,
   CATEGORY_PROMPT_APPENDS,
   DEFAULT_CATEGORIES,
+  resolveAvailableCategoryNames,
   resolveCategory,
 } from "./category"
 export type {
@@ -184,10 +195,15 @@ export type {
   TrustedRespawnLaunchResolver,
 } from "./manager"
 export {
+  AGENT_INVOCATION_CONDITIONS,
   BUILTIN_AGENTS,
   BUILTIN_AGENT_DEFAULTS,
   CURATED_READONLY_AGENT_NAMES,
+  EMPTY_SKILL_INVOCATIONS,
+  PLAN_GATED_AGENT_NAMES,
   defineAgent,
+  evaluateInvocationGuard,
+  invocationConditionForAgent,
   loadAgents,
   mapOmoConfigAgents,
   registerAgent,
@@ -195,6 +211,7 @@ export {
   resolveToolRule,
 } from "./agents"
 export type {
+  AgentInvocationCondition,
   AgentModelCandidate,
   AgentModelEntry,
   AgentModelUnavailableResult,
@@ -205,10 +222,12 @@ export type {
   AgentLoaderDiagnostic,
   AgentLoaderDiagnosticKind,
   AgentToolRule,
+  InvocationGuardVerdict,
   LoadAgentsOptions,
   LoadAgentsResult,
   ResolveAgentOptions,
   ResolvedAgentResult,
+  SkillInvocationState,
 } from "./agents"
 export {
   buildCompletionDetails,
@@ -258,8 +277,10 @@ export type {
   ResidencyRegistry,
   RespawnPort,
   RespawnResult,
+  SuspendFailure,
+  SuspendInput,
+  SuspendSummary,
   TaskLifecycle,
-  TeardownSummary,
 } from "./lifecycle"
 export { DEFAULT_SEND_DELIVERY, createSteeringEngine } from "./steering"
 export type {
@@ -370,6 +391,7 @@ export type {
   OutputManager,
   RenderOptions,
   RenderedTranscript,
+  SuspendedDetails,
   TaskOutputDeps,
   TaskOutputDetails,
   TaskOutputInput,

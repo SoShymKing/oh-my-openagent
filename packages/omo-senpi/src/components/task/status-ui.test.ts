@@ -25,6 +25,7 @@ function record(overrides: Partial<TaskRecord> & { task_id: string; status: Task
     created_at: "2026-07-07T00:00:00.000Z",
     updated_at: "2026-07-07T00:00:01.000Z",
     notification: { run_epoch: 0, notified_epoch: -1 },
+    notify_on_terminal: false,
     ...overrides,
   }
 }
@@ -133,8 +134,7 @@ describe("createTaskStatusUi.syncNow", () => {
     const widgetRow = ui.widgetCalls.at(-1)?.content?.[0] ?? ""
     expect(widgetRow).toContain("한")
     expect(widgetRow).toContain("category:ultrabrain")
-    expect(widgetRow).toContain("GPT-5.6 Sol")
-    expect(widgetRow).toContain("xhigh")
+    expect(widgetRow).toContain("openai/gpt-5.6-sol:xhigh")
     expect(widgetRow).toContain("in-process")
     expect(widgetRow).toContain("running")
     expect(widgetRow).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/u)

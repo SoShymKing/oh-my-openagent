@@ -43,7 +43,7 @@ describe("idle-injection wiring: real producers on one idle edge", () => {
           task_id: "st_done",
           name: "bg",
           status: "completed",
-          model: "quotio-openai/gpt-5.4-mini-fast",
+          model: "quotio-openai/gpt-5.6-luna-fast",
           duration_ms: 1,
           final_response: "",
           continuation_hint: "",
@@ -58,7 +58,7 @@ describe("idle-injection wiring: real producers on one idle edge", () => {
     // then exactly one injection carried both, completion first, via the coordinator (no plaintext races)
     expect(delivered).toHaveLength(1)
     expect(delivered[0]).toContain("task st_done completed")
-    expect(delivered[0]).toContain("Continue the active omo ulw-loop run")
+    expect(delivered[0]).toContain("Continue the active omo-agent-toolkit ulw-loop run")
     expect(pi.userMessages).toEqual([])
   })
 })
