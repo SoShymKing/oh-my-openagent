@@ -1,5 +1,6 @@
 import { getLastAgentFromSession } from "../../hooks/atlas/session-last-agent"
 import { normalizeSDKResponse } from "../../shared/normalize-sdk-response"
+import { getOrLoadSessionAgent } from "../claude-code-session-state"
 import { MIRROR_SCHEMA_VERSION } from "./constants"
 import { readActiveLoop } from "./loop-reader"
 import { canonicalProjectDir } from "./mirror-path"
@@ -10,7 +11,10 @@ import type { BackgroundTaskSnapshot } from "../background-agent/types"
 export type TuiMirrorClient = {
   readonly session: {
     readonly status: () => Promise<unknown>
-    readonly messages: (input: { readonly path: { readonly id: string } }) => Promise<unknown>
+    readonly messages: (input: {
+      readonly path: { readonly id: string }
+      readonly query?: { readonly directory: string; readonly limit: number }
+    }) => Promise<unknown>
   }
 }
 
@@ -46,7 +50,14 @@ export async function buildTuiRuntimeSnapshot(
     version: MIRROR_SCHEMA_VERSION,
     projectDir: canonicalProjectDir(input.projectDir),
     updatedAt: Date.now(),
-    activeAgents: await activeAgentsFromStatuses(statuses, input.client, input.sessionAgentResolver ?? getLastAgentFromSession),
+    activeAgents: await activeAgentsFromStatuses(
+      statuses,
+      input.client,
+      input.sessionAgentResolver ?? ((sessionID, client) => getOrLoadSessionAgent(
+        sessionID,
+        () => getLastAgentFromSession(sessionID, client, {}, { directory: input.projectDir, limit: 20 }),
+      )),
+    ),
     jobBoard: input.backgroundManager.getTasksSnapshot().map(toJobRow),
     loop: loop.kind === "live" ? redactLoopText(loop) : null,
   }

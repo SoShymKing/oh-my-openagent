@@ -80,11 +80,13 @@ export function _resetForTesting(): void {
   syncSubagentSessions.clear()
   handedBackSyncSessions.clear()
   sessionAgentMap.clear()
+  sessionAgentLoadMap.clear()
   registeredAgentNames.clear()
   registeredAgentAliases.clear()
 }
 
 const sessionAgentMap = new Map<string, string>()
+const sessionAgentLoadMap = new Map<string, Promise<string | null>>()
 
 export function setSessionAgent(sessionID: string, agent: string): void {
   if (!sessionAgentMap.has(sessionID)) {
@@ -100,6 +102,31 @@ export function getSessionAgent(sessionID: string): string | undefined {
   return sessionAgentMap.get(sessionID)
 }
 
+export async function getOrLoadSessionAgent(
+  sessionID: string,
+  load: () => Promise<string | null>,
+): Promise<string | null> {
+  const cached = sessionAgentMap.get(sessionID)
+  if (cached !== undefined) return cached
+
+  const existing = sessionAgentLoadMap.get(sessionID)
+  if (existing !== undefined) return existing
+
+  const pending = Promise.resolve()
+    .then(load)
+    .catch(() => null)
+    .then((agent) => {
+      if (sessionAgentLoadMap.get(sessionID) !== pending) {
+        return sessionAgentMap.get(sessionID) ?? null
+      }
+      if (agent !== null) setSessionAgent(sessionID, agent)
+      return sessionAgentMap.get(sessionID) ?? null
+    })
+  sessionAgentLoadMap.set(sessionID, pending)
+  return pending
+}
+
 export function clearSessionAgent(sessionID: string): void {
   sessionAgentMap.delete(sessionID)
+  sessionAgentLoadMap.delete(sessionID)
 }
