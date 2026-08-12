@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test"
 
-import { _resetForTesting, getSessionAgent, updateSessionAgent } from "../features/claude-code-session-state"
+import {
+  _resetForTesting,
+  getOrLoadSessionAgent,
+  getSessionAgent,
+  updateSessionAgent,
+} from "../features/claude-code-session-state"
 import { clearSessionModel, getSessionModel, setSessionModel } from "../shared/session-model-state"
 import { clearSessionPromptParams } from "../shared/session-prompt-params-state"
 import { createEventHandler } from "./event"
@@ -85,6 +90,75 @@ describe("createEventHandler compaction agent filtering", () => {
 
     // then
     expect(getSessionAgent(sessionID)).toBe("atlas")
+  })
+
+  it("#given no cached agent #when a normal user message update arrives #then it stores the live agent", async () => {
+    // given
+    const sessionID = "ses_live_agent_update"
+    const eventHandler = createMinimalEventHandler()
+
+    // when
+    await eventHandler({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "msg-live-agent",
+            sessionID,
+            role: "user",
+            agent: "hephaestus",
+          },
+        },
+      },
+    })
+
+    // then
+    expect(getSessionAgent(sessionID)).toBe("hephaestus")
+  })
+
+  it("#given a cached agent #when its session is deleted #then it clears the cache entry", async () => {
+    // given
+    const sessionID = "ses_deleted_agent"
+    updateSessionAgent(sessionID, "atlas")
+    const eventHandler = createMinimalEventHandler()
+
+    // when
+    await eventHandler({
+      event: {
+        type: "session.deleted",
+        properties: { info: { id: sessionID } },
+      },
+    })
+
+    // then
+    expect(getSessionAgent(sessionID)).toBeUndefined()
+  })
+
+  it("#given a negative agent load #when its session is deleted #then the same id can load a fresh agent", async () => {
+    // given
+    const sessionID = "ses_deleted_negative_agent"
+    let loadCalls = 0
+    expect(await getOrLoadSessionAgent(sessionID, async () => {
+      loadCalls += 1
+      return null
+    })).toBeNull()
+    expect(loadCalls).toBe(1)
+
+    // when
+    await createMinimalEventHandler()({
+      event: {
+        type: "session.deleted",
+        properties: { info: { id: sessionID } },
+      },
+    })
+    const agent = await getOrLoadSessionAgent(sessionID, async () => {
+      loadCalls += 1
+      return "atlas"
+    })
+
+    // then
+    expect(agent).toBe("atlas")
+    expect(loadCalls).toBe(2)
   })
 
   it("does not overwrite the stored session model with compaction", async () => {

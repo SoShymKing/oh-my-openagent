@@ -22,17 +22,28 @@ const defaultSessionLastAgentDeps: SessionLastAgentDeps = {
 
 type SessionMessagesClient = {
   session: {
-    messages: (input: { path: { id: string } }) => Promise<unknown>
+    messages: (input: {
+      readonly path: { readonly id: string }
+      readonly query?: SessionMessageRequestOptions
+    }) => Promise<unknown>
   }
+}
+
+type SessionMessageRequestOptions = {
+  readonly directory: string
+  readonly limit: number
 }
 
 async function getLastAgentFromSessionMessages(
   sessionID: string,
   client: SessionMessagesClient,
   deps: SessionLastAgentDeps,
+  requestOptions?: SessionMessageRequestOptions,
 ): Promise<string | null> {
   try {
-    const response = await client.session.messages({ path: { id: sessionID } })
+    const response = await client.session.messages(requestOptions
+      ? { path: { id: sessionID }, query: requestOptions }
+      : { path: { id: sessionID } })
     const messages = deps.normalizeSDKResponse(response, [] as Array<{
       id?: string
       agent?: string
@@ -74,6 +85,7 @@ export async function getLastAgentFromSession(
   sessionID: string,
   client?: SessionMessagesClient,
   deps: Partial<SessionLastAgentDeps> = {},
+  requestOptions?: SessionMessageRequestOptions,
 ): Promise<string | null> {
   const resolvedDeps: SessionLastAgentDeps = {
     ...defaultSessionLastAgentDeps,
@@ -82,11 +94,11 @@ export async function getLastAgentFromSession(
 
   const sqliteBackend = resolvedDeps.isSqliteBackend()
   if (client) {
-    const sdkAgent = await getLastAgentFromSessionMessages(sessionID, client, resolvedDeps)
+    const sdkAgent = await getLastAgentFromSessionMessages(sessionID, client, resolvedDeps, requestOptions)
     if (sdkAgent !== null) {
       return sdkAgent
     }
-    if (sqliteBackend) {
+    if (requestOptions || sqliteBackend) {
       return null
     }
   }
@@ -128,13 +140,13 @@ export async function getLastAgentFromSession(
   } catch (error) {
     if (!(error instanceof Error)) throw error
     if (client) {
-      return getLastAgentFromSessionMessages(sessionID, client, resolvedDeps)
+      return getLastAgentFromSessionMessages(sessionID, client, resolvedDeps, requestOptions)
     }
     return null
   }
 
   if (client) {
-    return getLastAgentFromSessionMessages(sessionID, client, resolvedDeps)
+    return getLastAgentFromSessionMessages(sessionID, client, resolvedDeps, requestOptions)
   }
 
   return null
