@@ -7,10 +7,22 @@ import {
   type TelemetryEnv,
   type TelemetryProductConfig,
 } from "@oh-my-opencode/telemetry-core"
-import { BUILTIN_CATEGORY_DEFAULTS, CURATED_READONLY_AGENT_NAMES } from "@oh-my-opencode/senpi-task"
+import { CURATED_READONLY_AGENT_NAMES } from "@oh-my-opencode/senpi-task/agents-builtin"
+import { BUILTIN_CATEGORY_DEFAULTS } from "@oh-my-opencode/senpi-task/category-builtins"
 import { resolveAgentHome } from "../agent-home/resolve-agent-home"
+import { CATEGORY_CONFIG_SCHEMA } from "./category-config-schema"
+import { KNOWN_MODELS, KNOWN_PROVIDERS, type KnownProvider } from "./model-vocabulary"
+import { buildDelegationCompletedSchema } from "./delegation-schema"
+import { PARALLELISM_SUMMARY_SCHEMA } from "./parallelism-schema"
 
-export const OMO_NATIVE_POSTHOG_API_KEY = "phc_REPLACE_ME_OMO_NATIVE"
+export const OMO_NATIVE_POSTHOG_API_KEY = "phc_r6UYQzNZcGYSzKw4PxCiVrZepGqV3dw9qcvcKtRNUWAn"
+
+// Schema version shared by every native client. One constant, because two hardcoded literals in two
+// clients half-apply a bump: a session row and a task row would disagree about their own schema.
+export const OMO_NATIVE_SCHEMA_VERSION = 2
+
+export { KNOWN_MODELS, KNOWN_PROVIDERS } from "./model-vocabulary"
+export type { KnownProvider } from "./model-vocabulary"
 
 export type OmoNativePropertyType = "boolean" | "number" | "string"
 
@@ -30,36 +42,12 @@ function enumProperty<const Values extends readonly string[]>(values: Values): R
   return Object.freeze({ type: "string", values: Object.freeze(values) })
 }
 
-export const KNOWN_MODELS = Object.freeze({
-  anthropic: Object.freeze(["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5"]),
-  "anthropic-api": Object.freeze(["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5"]),
-  deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
-  google: Object.freeze(["gemini-3.6-flash"]),
-  "github-copilot": Object.freeze([
-    "claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "gpt-5.6-sol",
-    "gpt-5.6-terra",
-  ]),
-  "kimi-for-coding": Object.freeze(["k3", "kimi-for-coding-highspeed", "kimi-k3"]),
-  moonshotai: Object.freeze(["kimi-k3"]),
-  openai: Object.freeze(["gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-terra"]),
-  opencode: Object.freeze(["claude-opus-5", "claude-sonnet-5", "gpt-5.6-sol", "kimi-k3"]),
-  "opencode-go": Object.freeze(["deepseek-v4-pro", "kimi-k3", "minimax-m2.7", "minimax-m3"]),
-  "quotio-openai": Object.freeze(["gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-terra"]),
-  vercel: Object.freeze([
-    "claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "deepseek-v4-flash",
-    "deepseek-v4-pro", "gemini-3.6-flash", "gpt-5.6-sol", "gpt-5.6-terra", "kimi-k3", "minimax-m2.7",
-    "minimax-m3",
-  ]),
-  xai: Object.freeze(["grok-4.20-0309-non-reasoning"]),
-} as const)
-
-export type KnownProvider = keyof typeof KNOWN_MODELS
-export const KNOWN_PROVIDERS = Object.freeze(Object.keys(KNOWN_MODELS) as KnownProvider[])
 export const CURATED_AGENTS = Object.freeze([...CURATED_READONLY_AGENT_NAMES])
 export const BUILTIN_CATEGORY_NAMES = Object.freeze(BUILTIN_CATEGORY_DEFAULTS.map(({ name }) => name))
 export const BUILTIN_SKILL_NAMES = Object.freeze([
-  "ast-grep", "coding-agent-sessions", "data-scientist", "debugging", "frontend", "git-master",
-  "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "programming", "refactor", "remove-ai-slops",
+  "ast-grep", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master",
+  "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor",
+  "remove-ai-slops",
   "review-work", "start-work", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research",
   "visual-qa",
 ] as const)
@@ -83,6 +71,9 @@ export const OMO_NATIVE_EVENT_SCHEMAS = Object.freeze({
     provider_count: NUMBER_PROPERTY,
     providers: STRING_PROPERTY,
     reason: enumProperty(["startup", "reload", "new", "resume", "fork"] as const),
+    // Device-reported IANA zone. A timezone signal, never a country signal: countries share zones,
+    // span zones, and users override them. Country comes from PostHog's server-side GeoIP.
+    timezone: STRING_PROPERTY,
   }),
   prompt_submitted: Object.freeze({
     "$session_id": STRING_PROPERTY,
@@ -131,6 +122,12 @@ export const OMO_NATIVE_EVENT_SCHEMAS = Object.freeze({
     "$session_id": STRING_PROPERTY,
     feature: enumProperty(["goal_tool", "team_create", "memory_tool"] as const),
   }),
+  parallelism_summary: PARALLELISM_SUMMARY_SCHEMA,
+  delegation_completed: buildDelegationCompletedSchema({
+    providers: [...KNOWN_PROVIDERS, "custom"],
+    models: [...new Set(Object.values(KNOWN_MODELS).flat()), "custom"],
+  }),
+  category_config: CATEGORY_CONFIG_SCHEMA,
 } as const)
 
 export const OMO_NATIVE_PROPERTY_ALLOWLISTS = Object.freeze(Object.fromEntries(
@@ -151,12 +148,11 @@ const SALT_FILE_NAME = "session-id-salt"
 const SALT_LENGTH = 32
 const fallbackSalts = new Map<string, Buffer>()
 
-export function createOmoNativeProductConfig(): TelemetryProductConfig & { readonly disableGeoip: true } {
+export function createOmoNativeProductConfig(): TelemetryProductConfig {
   return {
     cacheDirName: "omo-native",
     defaultApiKey: OMO_NATIVE_POSTHOG_API_KEY,
     defaultHost: DEFAULT_POSTHOG_HOST,
-    disableGeoip: true,
     eventName: "daily_active",
     machineIdPrefix: "omo-senpi:",
     packageName: "@oh-my-opencode/omo-senpi",

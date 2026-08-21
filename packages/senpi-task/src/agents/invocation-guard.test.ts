@@ -86,16 +86,6 @@ describe("evaluateInvocationGuard", () => {
     expect(verdict.kind).toBe("deny")
   })
 
-  test("#given a missing user request #when momus is denied #then the message carries no self-unlock coaching", () => {
-    // given / when
-    const verdict = evaluateInvocationGuard("momus", stateOf({ invoked: ["ulw-plan"], artifact: true }))
-
-    // then
-    expect(verdict.kind).toBe("deny")
-    if (verdict.kind !== "deny") throw new Error("expected deny")
-    expect(verdict.message).not.toContain("SKILL.md")
-    expect(verdict.message).not.toContain("/skill:")
-  })
 
   test("#given a user request without a plan artifact #when momus is evaluated #then it denies naming the plan artifact", () => {
     // given / when
@@ -158,5 +148,42 @@ describe("SkillInvocationState planArtifactReferences", () => {
 
     // then
     expect(state.planArtifactReferences()).toEqual(references)
+  })
+})
+
+describe("evaluateInvocationGuard - denial names the real unlock path", () => {
+  // The old denial forbade self-unlock but named no action that works, so agents burned repeated
+  // spawns. The message must tell the model what to ask the USER for, while still refusing to let
+  // the model unlock the gate itself.
+  test("#given a missing user request #when momus is evaluated #then the denial names the user-driven unlock", () => {
+    // given / when
+    const verdict = evaluateInvocationGuard("momus", stateOf({ artifact: true }))
+
+    // then
+    expect(verdict.kind).toBe("deny")
+    if (verdict.kind !== "deny") return
+    expect(verdict.message).toContain("/skill:ulw-plan")
+    expect(verdict.message.toLowerCase()).toContain("ask the user")
+  })
+
+  test("#given a missing plan artifact #when metis is evaluated #then the denial still names the plan-file requirement", () => {
+    // given / when
+    const verdict = evaluateInvocationGuard("metis", stateOf({ requested: ["ulw-plan"] }))
+
+    // then
+    expect(verdict.kind).toBe("deny")
+    if (verdict.kind !== "deny") return
+    expect(verdict.message).toContain(".omo/plans")
+  })
+
+  test("#given start-work already invoked #when momus is evaluated #then the terminal denial does not advertise an unlock", () => {
+    // given / when
+    const verdict = evaluateInvocationGuard("momus", stateOf({ invoked: ["start-work"], requested: ["ulw-plan"], artifact: true }))
+
+    // then
+    expect(verdict.kind).toBe("deny")
+    if (verdict.kind !== "deny") return
+    expect(verdict.message).toContain("start-work")
+    expect(verdict.message).not.toContain("/skill:ulw-plan")
   })
 })

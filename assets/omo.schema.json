@@ -807,6 +807,31 @@
       ],
       "additionalProperties": false
     },
+    "git_master": {
+      "type": "object",
+      "properties": {
+        "commit_footer": {
+          "default": true,
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "include_co_authored_by": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commit_footer",
+        "include_co_authored_by"
+      ],
+      "additionalProperties": false
+    },
     "task": {
       "type": "object",
       "properties": {
@@ -963,6 +988,70 @@
             "max_members",
             "max_parallel_members",
             "max_wall_clock_minutes"
+          ],
+          "additionalProperties": false
+        },
+        "dag": {
+          "type": "object",
+          "properties": {
+            "max_nodes_per_run": {
+              "default": 64,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_runs_per_session": {
+              "default": 16,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "subscriber_ring": {
+              "default": 1000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "heartbeat_ms": {
+              "default": 15000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "history_default_limit": {
+              "default": 256,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "history_max_limit": {
+              "default": 1000,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "retention_days": {
+              "default": 7,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_prompt_bytes": {
+              "default": 262144,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "max_nodes_per_run",
+            "max_runs_per_session",
+            "subscriber_ring",
+            "heartbeat_ms",
+            "history_default_limit",
+            "history_max_limit",
+            "retention_days",
+            "max_prompt_bytes"
           ],
           "additionalProperties": false
         }
@@ -1232,8 +1321,9 @@
         },
         "reflection": {
           "default": {
+            "enabled": true,
             "trigger": {
-              "step_count": 0,
+              "step_count": 25,
               "on_compaction": true
             },
             "merge": "auto",
@@ -1243,15 +1333,19 @@
           },
           "type": "object",
           "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
             "trigger": {
               "default": {
-                "step_count": 0,
+                "step_count": 25,
                 "on_compaction": true
               },
               "type": "object",
               "properties": {
                 "step_count": {
-                  "default": 0,
+                  "default": 25,
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
@@ -1297,11 +1391,178 @@
             }
           },
           "required": [
+            "enabled",
             "trigger",
             "merge",
             "category",
             "timeout_minutes",
             "sandbox"
+          ],
+          "additionalProperties": false
+        },
+        "nudge": {
+          "default": {
+            "enabled": true,
+            "every_user_turns": 10
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "every_user_turns": {
+              "default": 10,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "enabled",
+            "every_user_turns"
+          ],
+          "additionalProperties": false
+        },
+        "facts": {
+          "default": {
+            "enabled": true,
+            "debounce_settles": 4
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "debounce_settles": {
+              "default": 4,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "enabled",
+            "debounce_settles"
+          ],
+          "additionalProperties": false
+        },
+        "dream": {
+          "default": {
+            "enabled": true,
+            "idle_minutes": 30,
+            "min_hours_between": 24,
+            "shutdown_launch": true,
+            "auto_select_max": 5,
+            "auto_select_max_chars": 150000
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "idle_minutes": {
+              "default": 30,
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "min_hours_between": {
+              "default": 24,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "shutdown_launch": {
+              "default": true,
+              "type": "boolean"
+            },
+            "auto_select_max": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "auto_select_max_chars": {
+              "default": 150000,
+              "type": "integer",
+              "minimum": 10000,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "enabled",
+            "idle_minutes",
+            "min_hours_between",
+            "shutdown_launch",
+            "auto_select_max",
+            "auto_select_max_chars"
+          ],
+          "additionalProperties": false
+        },
+        "people": {
+          "default": {
+            "enabled": true,
+            "max_entries": 40,
+            "max_entry_chars": 200
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_entries": {
+              "default": 40,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "max_entry_chars": {
+              "default": 200,
+              "type": "integer",
+              "minimum": 50,
+              "maximum": 500
+            }
+          },
+          "required": [
+            "enabled",
+            "max_entries",
+            "max_entry_chars"
+          ],
+          "additionalProperties": false
+        },
+        "soul": {
+          "default": {
+            "edit_notice": true
+          },
+          "type": "object",
+          "properties": {
+            "edit_notice": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "edit_notice"
+          ],
+          "additionalProperties": false
+        },
+        "write_notice": {
+          "default": {
+            "enabled": true
+          },
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
           ],
           "additionalProperties": false
         },
@@ -1366,6 +1627,9 @@
               "reflection": {
                 "type": "object",
                 "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
                   "trigger": {
                     "type": "object",
                     "properties": {
@@ -1407,6 +1671,103 @@
                 },
                 "additionalProperties": false
               },
+              "nudge": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "every_user_turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "facts": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "debounce_settles": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "dream": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "idle_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "min_hours_between": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "shutdown_launch": {
+                    "type": "boolean"
+                  },
+                  "auto_select_max": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  },
+                  "auto_select_max_chars": {
+                    "type": "integer",
+                    "minimum": 10000,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "people": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "max_entries": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "max_entry_chars": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 500
+                  }
+                },
+                "additionalProperties": false
+              },
+              "soul": {
+                "type": "object",
+                "properties": {
+                  "edit_notice": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "write_notice": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
               "sync": {
                 "type": "object",
                 "properties": {
@@ -1444,6 +1805,12 @@
         "agent",
         "tool_exposure",
         "reflection",
+        "nudge",
+        "facts",
+        "dream",
+        "people",
+        "soul",
+        "write_notice",
         "sync",
         "search",
         "compile_warn_tokens",
@@ -12191,6 +12558,25 @@
           },
           "additionalProperties": false
         },
+        "git_master": {
+          "type": "object",
+          "properties": {
+            "commit_footer": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "include_co_authored_by": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
         "task": {
           "type": "object",
           "properties": {
@@ -12304,6 +12690,52 @@
                   "maximum": 8
                 },
                 "max_wall_clock_minutes": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "dag": {
+              "type": "object",
+              "properties": {
+                "max_nodes_per_run": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_runs_per_session": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "subscriber_ring": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "heartbeat_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "history_default_limit": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "history_max_limit": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "retention_days": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_prompt_bytes": {
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
@@ -12557,6 +12989,9 @@
             "reflection": {
               "type": "object",
               "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
                 "trigger": {
                   "type": "object",
                   "properties": {
@@ -12594,6 +13029,103 @@
                     "required",
                     "off"
                   ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "nudge": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "every_user_turns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "facts": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "debounce_settles": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "dream": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "idle_minutes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "min_hours_between": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "shutdown_launch": {
+                  "type": "boolean"
+                },
+                "auto_select_max": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                },
+                "auto_select_max_chars": {
+                  "type": "integer",
+                  "minimum": 10000,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "people": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_entries": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "max_entry_chars": {
+                  "type": "integer",
+                  "minimum": 50,
+                  "maximum": 500
+                }
+              },
+              "additionalProperties": false
+            },
+            "soul": {
+              "type": "object",
+              "properties": {
+                "edit_notice": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "write_notice": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
@@ -12643,6 +13175,9 @@
                   "reflection": {
                     "type": "object",
                     "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
                       "trigger": {
                         "type": "object",
                         "properties": {
@@ -12680,6 +13215,103 @@
                           "required",
                           "off"
                         ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "nudge": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "every_user_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "facts": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "debounce_settles": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dream": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "idle_minutes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "min_hours_between": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "shutdown_launch": {
+                        "type": "boolean"
+                      },
+                      "auto_select_max": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "auto_select_max_chars": {
+                        "type": "integer",
+                        "minimum": 10000,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "people": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_entries": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100
+                      },
+                      "max_entry_chars": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 500
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "soul": {
+                    "type": "object",
+                    "properties": {
+                      "edit_notice": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "write_notice": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
                       }
                     },
                     "additionalProperties": false
@@ -13522,6 +14154,25 @@
           },
           "additionalProperties": false
         },
+        "git_master": {
+          "type": "object",
+          "properties": {
+            "commit_footer": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "include_co_authored_by": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
         "task": {
           "type": "object",
           "properties": {
@@ -13635,6 +14286,52 @@
                   "maximum": 8
                 },
                 "max_wall_clock_minutes": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "dag": {
+              "type": "object",
+              "properties": {
+                "max_nodes_per_run": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_runs_per_session": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "subscriber_ring": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "heartbeat_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "history_default_limit": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "history_max_limit": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "retention_days": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "max_prompt_bytes": {
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "maximum": 9007199254740991
@@ -13888,6 +14585,9 @@
             "reflection": {
               "type": "object",
               "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
                 "trigger": {
                   "type": "object",
                   "properties": {
@@ -13925,6 +14625,103 @@
                     "required",
                     "off"
                   ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "nudge": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "every_user_turns": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "facts": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "debounce_settles": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "dream": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "idle_minutes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "min_hours_between": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "shutdown_launch": {
+                  "type": "boolean"
+                },
+                "auto_select_max": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                },
+                "auto_select_max_chars": {
+                  "type": "integer",
+                  "minimum": 10000,
+                  "maximum": 9007199254740991
+                }
+              },
+              "additionalProperties": false
+            },
+            "people": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "max_entries": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                },
+                "max_entry_chars": {
+                  "type": "integer",
+                  "minimum": 50,
+                  "maximum": 500
+                }
+              },
+              "additionalProperties": false
+            },
+            "soul": {
+              "type": "object",
+              "properties": {
+                "edit_notice": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "write_notice": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
@@ -13974,6 +14771,9 @@
                   "reflection": {
                     "type": "object",
                     "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
                       "trigger": {
                         "type": "object",
                         "properties": {
@@ -14011,6 +14811,103 @@
                           "required",
                           "off"
                         ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "nudge": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "every_user_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "facts": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "debounce_settles": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dream": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "idle_minutes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "min_hours_between": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "shutdown_launch": {
+                        "type": "boolean"
+                      },
+                      "auto_select_max": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "auto_select_max_chars": {
+                        "type": "integer",
+                        "minimum": 10000,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "people": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_entries": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100
+                      },
+                      "max_entry_chars": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 500
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "soul": {
+                    "type": "object",
+                    "properties": {
+                      "edit_notice": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "write_notice": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
                       }
                     },
                     "additionalProperties": false
@@ -14859,6 +15756,25 @@
             },
             "additionalProperties": false
           },
+          "git_master": {
+            "type": "object",
+            "properties": {
+              "commit_footer": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "include_co_authored_by": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
           "task": {
             "type": "object",
             "properties": {
@@ -14972,6 +15888,52 @@
                     "maximum": 8
                   },
                   "max_wall_clock_minutes": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "dag": {
+                "type": "object",
+                "properties": {
+                  "max_nodes_per_run": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "max_runs_per_session": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "subscriber_ring": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "heartbeat_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "history_default_limit": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "history_max_limit": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "retention_days": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "max_prompt_bytes": {
                     "type": "integer",
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
@@ -15225,6 +16187,9 @@
               "reflection": {
                 "type": "object",
                 "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
                   "trigger": {
                     "type": "object",
                     "properties": {
@@ -15262,6 +16227,103 @@
                       "required",
                       "off"
                     ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "nudge": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "every_user_turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "facts": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "debounce_settles": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "dream": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "idle_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "min_hours_between": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "shutdown_launch": {
+                    "type": "boolean"
+                  },
+                  "auto_select_max": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  },
+                  "auto_select_max_chars": {
+                    "type": "integer",
+                    "minimum": 10000,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "additionalProperties": false
+              },
+              "people": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "max_entries": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "max_entry_chars": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 500
+                  }
+                },
+                "additionalProperties": false
+              },
+              "soul": {
+                "type": "object",
+                "properties": {
+                  "edit_notice": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "write_notice": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
@@ -15311,6 +16373,9 @@
                     "reflection": {
                       "type": "object",
                       "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
                         "trigger": {
                           "type": "object",
                           "properties": {
@@ -15348,6 +16413,103 @@
                             "required",
                             "off"
                           ]
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "nudge": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "every_user_turns": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "facts": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "debounce_settles": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "dream": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "idle_minutes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "min_hours_between": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        },
+                        "shutdown_launch": {
+                          "type": "boolean"
+                        },
+                        "auto_select_max": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10
+                        },
+                        "auto_select_max_chars": {
+                          "type": "integer",
+                          "minimum": 10000,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "people": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "max_entries": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "max_entry_chars": {
+                          "type": "integer",
+                          "minimum": 50,
+                          "maximum": 500
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "soul": {
+                      "type": "object",
+                      "properties": {
+                        "edit_notice": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "write_notice": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
                         }
                       },
                       "additionalProperties": false
@@ -26122,6 +27284,25 @@
                 },
                 "additionalProperties": false
               },
+              "git_master": {
+                "type": "object",
+                "properties": {
+                  "commit_footer": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "include_co_authored_by": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
               "task": {
                 "type": "object",
                 "properties": {
@@ -26235,6 +27416,52 @@
                         "maximum": 8
                       },
                       "max_wall_clock_minutes": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dag": {
+                    "type": "object",
+                    "properties": {
+                      "max_nodes_per_run": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_runs_per_session": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "subscriber_ring": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "heartbeat_ms": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "history_default_limit": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "history_max_limit": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "retention_days": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_prompt_bytes": {
                         "type": "integer",
                         "exclusiveMinimum": 0,
                         "maximum": 9007199254740991
@@ -26488,6 +27715,9 @@
                   "reflection": {
                     "type": "object",
                     "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
                       "trigger": {
                         "type": "object",
                         "properties": {
@@ -26525,6 +27755,103 @@
                           "required",
                           "off"
                         ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "nudge": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "every_user_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "facts": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "debounce_settles": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dream": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "idle_minutes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "min_hours_between": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "shutdown_launch": {
+                        "type": "boolean"
+                      },
+                      "auto_select_max": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "auto_select_max_chars": {
+                        "type": "integer",
+                        "minimum": 10000,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "people": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_entries": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100
+                      },
+                      "max_entry_chars": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 500
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "soul": {
+                    "type": "object",
+                    "properties": {
+                      "edit_notice": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "write_notice": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
                       }
                     },
                     "additionalProperties": false
@@ -26574,6 +27901,9 @@
                         "reflection": {
                           "type": "object",
                           "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
                             "trigger": {
                               "type": "object",
                               "properties": {
@@ -26611,6 +27941,103 @@
                                 "required",
                                 "off"
                               ]
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "nudge": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "every_user_turns": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "facts": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "debounce_settles": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "dream": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "idle_minutes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "min_hours_between": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "shutdown_launch": {
+                              "type": "boolean"
+                            },
+                            "auto_select_max": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 10
+                            },
+                            "auto_select_max_chars": {
+                              "type": "integer",
+                              "minimum": 10000,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "people": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "max_entries": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 100
+                            },
+                            "max_entry_chars": {
+                              "type": "integer",
+                              "minimum": 50,
+                              "maximum": 500
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "soul": {
+                          "type": "object",
+                          "properties": {
+                            "edit_notice": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "write_notice": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
                             }
                           },
                           "additionalProperties": false
@@ -27453,6 +28880,25 @@
                 },
                 "additionalProperties": false
               },
+              "git_master": {
+                "type": "object",
+                "properties": {
+                  "commit_footer": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "include_co_authored_by": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
               "task": {
                 "type": "object",
                 "properties": {
@@ -27566,6 +29012,52 @@
                         "maximum": 8
                       },
                       "max_wall_clock_minutes": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dag": {
+                    "type": "object",
+                    "properties": {
+                      "max_nodes_per_run": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_runs_per_session": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "subscriber_ring": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "heartbeat_ms": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "history_default_limit": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "history_max_limit": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "retention_days": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "max_prompt_bytes": {
                         "type": "integer",
                         "exclusiveMinimum": 0,
                         "maximum": 9007199254740991
@@ -27819,6 +29311,9 @@
                   "reflection": {
                     "type": "object",
                     "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
                       "trigger": {
                         "type": "object",
                         "properties": {
@@ -27856,6 +29351,103 @@
                           "required",
                           "off"
                         ]
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "nudge": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "every_user_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "facts": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "debounce_settles": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dream": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "idle_minutes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "min_hours_between": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "shutdown_launch": {
+                        "type": "boolean"
+                      },
+                      "auto_select_max": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "auto_select_max_chars": {
+                        "type": "integer",
+                        "minimum": 10000,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "people": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_entries": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100
+                      },
+                      "max_entry_chars": {
+                        "type": "integer",
+                        "minimum": 50,
+                        "maximum": 500
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "soul": {
+                    "type": "object",
+                    "properties": {
+                      "edit_notice": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "write_notice": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
                       }
                     },
                     "additionalProperties": false
@@ -27905,6 +29497,9 @@
                         "reflection": {
                           "type": "object",
                           "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
                             "trigger": {
                               "type": "object",
                               "properties": {
@@ -27942,6 +29537,103 @@
                                 "required",
                                 "off"
                               ]
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "nudge": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "every_user_turns": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "facts": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "debounce_settles": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "dream": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "idle_minutes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "min_hours_between": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "shutdown_launch": {
+                              "type": "boolean"
+                            },
+                            "auto_select_max": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 10
+                            },
+                            "auto_select_max_chars": {
+                              "type": "integer",
+                              "minimum": 10000,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "people": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "max_entries": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 100
+                            },
+                            "max_entry_chars": {
+                              "type": "integer",
+                              "minimum": 50,
+                              "maximum": 500
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "soul": {
+                          "type": "object",
+                          "properties": {
+                            "edit_notice": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "write_notice": {
+                          "type": "object",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean"
                             }
                           },
                           "additionalProperties": false

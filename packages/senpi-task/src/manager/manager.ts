@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto"
+import { mkdirSync } from "node:fs"
+import { join } from "node:path"
+
 import { log } from "@oh-my-opencode/utils"
 
+import type { DagTaskOwner, DagTaskOwnerKey, OwnedStartResult } from "../dag/owner"
 import { registerLifecycleReattachPorts, type ReattachResult, type RespawnResult } from "../lifecycle/port"
 import { RunnerError } from "../runners/in-process/runner-error"
 import { RpcProcessRunner } from "../runners/rpc-process"
@@ -9,7 +14,7 @@ import { resolvedReasoningFields } from "../state/resolved-reasoning"
 import { TaskIdSpaceExhaustedError } from "../state/id"
 import type { TaskRecord, TaskRunStats } from "../state"
 import { createSteeringEngine } from "../steering"
-import type { CancelOutcome, DestructionPort, InterruptOutcome, SendInput, SendOutcome, SteeringEngine, SteeringPort } from "../steering"
+import type { CancelOptions, CancelOutcome, DestructionPort, InterruptOutcome, SendInput, SendOutcome, SteeringEngine, SteeringPort } from "../steering"
 import { discardManagedHandle, type ManagedChildHandle, type ManagedChildListener } from "./child-handle"
 import { TaskConcurrency } from "./concurrency"
 import { decideDepthPolicy } from "./depth-policy"
@@ -23,12 +28,15 @@ import {
   inSession,
   isTerminalRecord,
   nowIso,
+  promotedBackgroundMode,
   recordSpawnedPid,
 } from "./manager-helpers"
 import { createOutcomeTracker, type OutcomeTracker } from "./manager-outcome"
 import { claimTaskRecord, TaskRecordCollisionError } from "../store"
+import { withTaskRecordLockAsync } from "../store/record-lock"
 import { reattachManagedTask, respawnManagedTask } from "./manager-respawn"
 import { NameRegistry } from "./names"
+import { TaskSequence } from "./task-sequence"
 import { createRunStatsTracker, type RunStatsTracker } from "../run-stats"
 import { subscribeTranscriptLog } from "./transcript-log"
 import type {
@@ -38,6 +46,7 @@ import type {
   ManagedRunner,
   ManagedStartSpec,
   ManagerStartSpec,
+  ResolvedChildPlan,
   StartResult,
   TaskManager,
   TaskManagerOptions,
@@ -65,7 +74,7 @@ type TaskWaiter = {
 }
 
 type RpcRespawnRunner = {
-  start(spec: RpcRunnerSpec): RpcChildHandle
+  start(spec: RpcRunnerSpec): Promise<RpcChildHandle>
 }
 
 type TaskManagerImplOptions = TaskManagerOptions & {
@@ -82,6 +91,14 @@ type ReattachingTaskManager = TaskManager & {
 const NOOP_DESTRUCTION: DestructionPort = { destroyResidentTask: () => Promise.resolve() }
 const GENERIC_START_FAILURE_MESSAGE = "Task runner failed to start."
 
+function ownerLockPath(stateDir: string, owner: DagTaskOwnerKey): string {
+  const ownerKey = `${owner.kind}\0${owner.runId}\0${owner.nodeId}`
+  const digest = createHash("sha256").update(ownerKey).digest("hex")
+  const ownerDir = join(stateDir, "owner-locks")
+  mkdirSync(ownerDir, { recursive: true })
+  return join(ownerDir, digest)
+}
+
 function publicStartFailureMessage(error: unknown): string {
   try {
     if (!RunnerError.is(error)) return GENERIC_START_FAILURE_MESSAGE
@@ -91,7 +108,7 @@ function publicStartFailureMessage(error: unknown): string {
       case "session-create-failed":
         return "In-process child session creation failed."
       case "child-prompt-failed":
-        return "In-process child prompt failed to start."
+        return "Child prompt failed to start."
       default:
         return GENERIC_START_FAILURE_MESSAGE
     }
@@ -109,6 +126,7 @@ class TaskManagerImpl implements TaskManager {
   readonly #concurrency: TaskConcurrency
   readonly #rpcRespawnRunner: RpcRespawnRunner
   readonly #names = new NameRegistry()
+  readonly #taskSequence = new TaskSequence()
   readonly #live = new Map<string, LiveTask>()
   // Callers can subscribe before a queued task owns a handle. Each entry is attached exactly once
   // when #launch promotes it, and its returned cleanup owns both pending and live subscriptions.
@@ -180,18 +198,79 @@ class TaskManagerImpl implements TaskManager {
   }
 
   async start(spec: ManagerStartSpec): Promise<StartResult> {
-    const normalizeSpecName = (value: string | undefined): string | undefined => {
-      const trimmed = value?.trim()
-      return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed
-    }
-
     const resolution = this.#options.planner(spec)
     if (resolution.kind === "error") return { kind: "plan_unresolved", error: resolution.error }
-    const plan = resolution.plan
 
     if (this.#options.admit !== undefined) {
       const admission = await this.#options.admit(spec.parent_session_id)
       if (admission.kind === "rejected") return { kind: "residency_denied", reason: admission.message }
+    }
+
+    return this.#startResolved(spec, resolution.plan)
+  }
+
+  async startOwned(spec: ManagerStartSpec, owner: DagTaskOwner): Promise<OwnedStartResult> {
+    const lockPath = ownerLockPath(this.#options.store.stateDir, owner)
+    const resolution = this.#options.planner(spec)
+    if (resolution.kind === "error") return { kind: "plan_unresolved", error: resolution.error }
+
+    if (this.#options.admit !== undefined) {
+      const admission = await this.#options.admit(spec.parent_session_id)
+      if (admission.kind === "rejected") return { kind: "residency_denied", reason: admission.message }
+    }
+
+    return withTaskRecordLockAsync(lockPath, async () => {
+      const raced = this.#ownedResult(owner)
+      if (raced !== undefined) return raced
+      const result = await this.#startResolved(spec, resolution.plan, owner)
+      return result.kind === "started" ? { ...result, reused: false } : result
+    })
+  }
+
+  // The LAST match wins: a retried DAG node claims the same (kind,runId,nodeId) under a new
+  // execAttempt-scoped fingerprint, and task ids sort by creation, so the newest claim is the live
+  // one. The superseded record keeps its dag owner marker (spawn-time launcher stripping reads it).
+  findOwnedTask(owner: DagTaskOwnerKey): TaskRecord | undefined {
+    return this.#options.store.list().records.findLast((record) =>
+      record.owner?.kind === owner.kind &&
+      record.owner.runId === owner.runId &&
+      record.owner.nodeId === owner.nodeId,
+    )
+  }
+
+  #ownedResult(owner: DagTaskOwner): OwnedStartResult | undefined {
+    const record = this.findOwnedTask(owner)
+    if (record === undefined) return undefined
+    if (record.owner?.fingerprint !== owner.fingerprint) {
+      // A settled record cannot be re-run in place, so a differing fingerprint on it is a retry:
+      // ownership moves to the fresh task. Only a LIVE task with a different fingerprint is a
+      // genuine conflict between two callers over one running child.
+      if (isTerminalRecord(record)) return undefined
+      return {
+        kind: "owner_conflict",
+        task_id: record.task_id,
+        existing_fingerprint: record.owner?.fingerprint ?? "",
+        requested_fingerprint: owner.fingerprint,
+      }
+    }
+    return {
+      kind: "started",
+      reused: true,
+      task_id: record.task_id,
+      status: record.status,
+      name: record.name ?? record.task_id,
+      ...(record.resolved_model !== undefined ? { resolved_model: record.resolved_model } : {}),
+    }
+  }
+
+  async #startResolved(
+    spec: ManagerStartSpec,
+    plan: ResolvedChildPlan,
+    owner?: DagTaskOwner,
+  ): Promise<StartResult> {
+    const normalizeSpecName = (value: string | undefined): string | undefined => {
+      const trimmed = value?.trim()
+      return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed
     }
 
     const maxDepth = plan.maxDepth ?? this.#options.config.max_depth
@@ -220,7 +299,16 @@ class TaskManagerImpl implements TaskManager {
 
     let claimed: TaskRecord
     try {
-      const draft = createTaskRecord(buildRecordInput({ spec, plan, name: "", executionMode }), this.#now())
+      const draft = createTaskRecord({
+        ...buildRecordInput({
+          spec,
+          plan,
+          name: "",
+          executionMode,
+          taskSeq: this.#taskSequence.next(spec.parent_session_id),
+        }),
+        ...(owner === undefined ? {} : { owner }),
+      }, this.#now())
       const claimDraft: TaskRecord = { ...draft, name: requestedRegistration?.name ?? draft.task_id, host_pid: this.#hostPid }
       claimed = claimTaskRecord(this.#options.store, claimDraft, {
         nameFollowsId: requestedRegistration === undefined,
@@ -346,8 +434,8 @@ class TaskManagerImpl implements TaskManager {
     return outcome
   }
 
-  async cancelTask(idOrName: string, reason?: string): Promise<CancelOutcome> {
-    const outcome = await this.#steering.cancelTask(idOrName, reason)
+  async cancelTask(idOrName: string, reason?: string, options?: CancelOptions): Promise<CancelOutcome> {
+    const outcome = await this.#steering.cancelTask(idOrName, reason, options)
     if (outcome.kind === "cancelled") this.#releaseSlotForTask(outcome.task_id)
     return outcome
   }
@@ -404,9 +492,13 @@ class TaskManagerImpl implements TaskManager {
     this.#background.add(taskId)
     // Background intent must survive the owning process: a resumed manager reads the RECORD to
     // decide terminal notification, so promotion is persisted, not just held in memory.
-    this.#options.store.mutate(taskId, (record) =>
-      record.notify_on_terminal ? record : { ...record, notify_on_terminal: true },
-    )
+    // A promoted task is neither a background spawn nor a plain foreground run: the mode records
+    // the hand-off so terminal accounting keeps the two populations apart.
+    this.#options.store.mutate(taskId, (record) => {
+      const backgroundMode = promotedBackgroundMode(record)
+      if (record.notify_on_terminal && record.background_mode === backgroundMode) return record
+      return { ...record, notify_on_terminal: true, background_mode: backgroundMode }
+    })
     return promoted
   }
 

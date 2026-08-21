@@ -158,7 +158,7 @@ No Metis, no plan file, no execution until the user approves. The UNCLEAR path a
 
 ## Phase 3 - Generate the plan (only after approval)
 1. Rerun `node "<skill-root>/scripts/scaffold-plan.mjs" <slug> [--clear|--unclear]` without `--draft-only`. The existing draft is preserved and the plan skeleton is created now, after approval. A plain rerun is a safe no-op; never hand-build the skeleton.
-2. **Metis gap analysis (mandatory):** spawn a metis reviewer for contradictions, missing constraints, scope-creep, unvalidated assumptions, and missing acceptance criteria; fold findings in silently.
+2. **Metis gap analysis (mandatory):** spawn a metis reviewer for contradictions, missing constraints — including unstated extrinsic ones: budget/spend, mandated stack, expected scale, target audience / compliance — scope-creep, unvalidated assumptions, and missing acceptance criteria; fold findings in silently; require each constraint gap to return as a proposed default plus reversibility, or a single owner-question when defaulting is unsafe.
 3. APPEND todo batches into the `## Todos` region with edit/apply_patch - never rewrite the script-emitted headers; 50+ todos is fine; one request -> one plan.
 4. Fill `## TL;DR (For humans)` LAST, after the detailed plan, so it summarizes the real plan, not an intention.
 5. Self-review: every todo has references + agent-executable acceptance criteria + happy+failure QA scenarios; no business-logic assumption without evidence; zero criteria need a human. HR6 backstop - confirm the plan's FIRST `## ` heading is `## TL;DR (For humans)` and that every header below it appears in the template order; if you ever hand-built or reordered the file, the human summary must still lead.
@@ -202,7 +202,7 @@ Every "present the plan summary/brief" above delivers THIS structure, in the use
 6. **Execution handoff** - execution runs via `/start-work <plan-name>` in THIS session or a NEW session, whichever the user prefers. Introduce the options: `--worktree <absolute-path>` (task-owned worktree; required for PR/branch work), `--make-pr` (deliver as a PR; auto-creates a task-owned worktree), `--ship` (implies `--make-pr`, keeps working until the PR is reviewed and MERGED).
 
 ### High-accuracy review (momus-only in omo-senpi)
-In omo-senpi the high-accuracy review is MOMUS-ONLY: one round is exactly ONE native `momus` review of the complete plan file. Momus runs at High and may take substantially longer than other agents. One round = exactly ONE `momus` review, dispatched against the COMPLETE plan file (todos + TL;DR filled) at the draft's exact recorded `plan_path`. Keep Momus in flight and wait for its terminal result: elapsed time alone never justifies cancelling, duplicating, replacing, or treating it as failed. After the verdict returns, fix every cited issue and resubmit fresh until it approves. Every round spawns a FRESH momus session; the dispatch prompt is the plan path ONLY. The harness forces the canonical contract and discards everything else, so literal substitution no longer applies to momus dispatch. `task_send` to momus is forbidden and refused by the harness; the only retry is fix-the-plan then spawn a NEW momus. Never cancel a momus for slowness. On cap exhaustion without approval: STOP, report outstanding blockers, ask the user - continue / accept / adjust.
+In omo-senpi the high-accuracy review is MOMUS-ONLY: one round is exactly ONE native `momus` review of the complete plan file. Momus runs at High and may take substantially longer than other agents. One round = exactly ONE `momus` review, dispatched against the COMPLETE plan file (todos + TL;DR filled) at the draft's exact recorded `plan_path`. Keep Momus in flight and wait for its terminal result: elapsed time alone never justifies cancelling, duplicating, replacing, or treating it as failed. After the verdict returns, fix every eligible blocker and resubmit fresh under the bounded convergence contract below; ineligible findings become non-blocking notes. Every round spawns a FRESH momus session; the dispatch prompt is the plan path ONLY. The harness forces the canonical contract and discards everything else, so literal substitution no longer applies to momus dispatch. `task_send` to momus is forbidden and refused by the harness; the only retry is fix-the-plan then spawn a NEW momus. Never cancel a momus for slowness. On cap exhaustion without approval: STOP, report outstanding blockers, ask the user - continue / accept / adjust.
 
 The parent records round_id, plan_sha256, and the spawned session id (receipt) in the DRAFT at launch; on completion the parent validates by re-hashing the live plan against the recorded plan_sha256 and matching the completion's session id to the recorded receipt; any mismatch or plan change terminalizes the round as inconclusive and requires a fresh momus round.
 
@@ -230,7 +230,31 @@ The parent records round_id, plan_sha256, and the spawned session id (receipt) i
 
 The first action must open the literal workspace root as a directory descriptor, then traverse `.omo`, `plans`, and the final target with descriptor-relative no-follow opens, `fstat` each ancestor as a directory and the final descriptor as a regular file, and hash all bytes read from that same final descriptor. If the platform cannot guarantee this chain, or any path/runtime/launch/receipt/digest check drifts, return `INCONCLUSIVE` before reviewing. The parent separately matches the completion envelope to the persisted session/process receipt. Never search or use another artifact.
 
-The draft must record the native Momus session/result, and the fix/retry summary. Immediately before handoff, repeat the same live canonical-path and SHA-256 validation and require it to match the approved round digest; drift invalidates the approval and starts a fresh round. Do not say "high-accuracy review completed" unless the receipt exists, the final verdict is unconditional approval, and the final live-plan validation passes.
+### Bounded convergence (the review must terminate)
+Review rounds are capped at 5 (unlimited only on explicit user request), and an approval whose only remaining items are notes counts as approval. A finding may BLOCK only when it names at least one `blocker_eligibility` category below with its concrete evidence; every other finding - speculative durability, replay/crash-recovery, schema, CLI-parsing, state-machine, or hardening concerns the accepted scope never required - is recorded as a non-blocking note and becomes implementation/test work, never plan expansion. After round 1 the blocker ledger FREEZES: later rounds verify accepted ledger blockers, regressions introduced by fixes, and new findings that pass eligibility - they never rediscover the plan from scratch. Fixes apply the smallest edit that resolves the cited blocker; neither reviews nor fixes grow the plan's scope. The harness forces the momus dispatch prompt to the plan path only, so the parent applies this contract when folding the verdict: only eligible findings drive plan edits.
+
+<!-- ulw-plan-review-convergence-contract -->
+```json
+{
+  "max_rounds": 5,
+  "max_rounds_override": "explicit_user_request_only",
+  "on_cap_reached": "stop_report_outstanding_blockers_ask_user",
+  "blocker_eligibility": [
+    "explicit_requirement_or_accepted_decision",
+    "existing_failing_regression",
+    "reproducible_broken_flow",
+    "concrete_security_data_loss_or_compatibility_risk",
+    "external_api_provider_or_release_contract_conflict"
+  ],
+  "ineligible_finding_disposition": "non_blocking_note",
+  "approval_with_notes_counts_as_approval": true,
+  "ledger_freeze_after_round": 1,
+  "closure_round_scope": ["accepted_ledger_blockers", "regressions_introduced_by_fixes", "new_findings_passing_blocker_eligibility"],
+  "fix_edit_policy": "smallest_edit_no_scope_expansion"
+}
+```
+
+The draft must record the native Momus session/result, and the fix/retry summary, plus the convergence ledger (accepted blockers, non-blocking notes, round count). Immediately before handoff, repeat the same live canonical-path and SHA-256 validation and require it to match the approved round digest; drift invalidates the approval and starts a fresh round. Do not say "high-accuracy review completed" unless the receipt exists, the final verdict is unconditional approval, and the final live-plan validation passes.
 
 ## Delegation discipline (OpenCode-native)
 Every delegated prompt starts with `TASK:`, then DELIVERABLE / SCOPE / VERIFY; state the role inside the prompt and include only the context the child needs:

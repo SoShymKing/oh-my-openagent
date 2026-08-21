@@ -73,16 +73,19 @@ export function evaluateInvocationGuard(agentName: string, state: SkillInvocatio
     }
   }
 
-  // The requirement is a USER request, never a model-initiated invocation: the denial deliberately
-  // avoids naming any mechanical unlock step.
+  // The requirement is a USER request, never a model-initiated invocation. The denial names the
+  // USER-driven unlock so the model stops re-spawning blindly, while still refusing to let the
+  // model arm the gate itself: every route named here is one only a human can take.
   const missing = condition.requiresSkills.filter((skill) => !state.hasUserRequested(skill))
   if (missing.length > 0) {
+    const names = missing.join(", ")
     return {
       kind: "deny",
       message:
-        `Agent "${agentName}" is plan-gated: it is available only after the user explicitly requests the ${missing.join(", ")} ` +
-        `workflow in this session, and no such request was made. Do not attempt to unlock this gate yourself - continue ` +
-        `without plan review (self-review instead), or ask the user whether they want a plan review.`,
+        `Agent "${agentName}" is plan-gated: it is available only after the user explicitly requests the ${names} ` +
+        `workflow in this session, and no such request was made. Do not attempt to unlock this gate yourself - retrying ` +
+        `this spawn will keep failing. Continue without plan review (self-review instead), or ask the user to start the ` +
+        `workflow themselves by running /skill:${names} or by asking for a plan in their own words.`,
     }
   }
 

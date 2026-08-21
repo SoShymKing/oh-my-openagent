@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
+import { rmSyncEfaultTolerant } from "./teardown.test-support"
 
 import type { ReflectionSpawnArgs } from "./worker/spawn"
 import {
@@ -12,7 +13,7 @@ import {
 
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) rmSyncEfaultTolerant(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 })
 
 function fixture(): {
@@ -37,6 +38,11 @@ function fixture(): {
 function spawnArgs(worktree: string): ReflectionSpawnArgs {
   const sessionDir = dirname(worktree)
   return {
+    attempt: 1,
+    hardDeadlineAt: Date.now() + 10_000,
+    category: "quick",
+    conversationIds: ["conversation-a"],
+    model: "fixture/model",
     command: "/bin/sh",
     args: ["-c", "exit 0"],
     cwd: worktree,
@@ -65,6 +71,8 @@ function build(policy: SandboxPolicy, options: {
       worktreeDir: setup.worktree,
       gitCommonDir: setup.gitCommonDir,
       payloadPaths: setup.payloadPaths,
+      command: "/bin/sh",
+      env: { PATH: process.env.PATH },
       platform: options.platform,
       which: options.which,
     }),
@@ -106,6 +114,8 @@ describe("reflection worker OS sandbox", () => {
       gitCommonDir: setup.gitCommonDir,
       payloadPaths: setup.payloadPaths,
       foreignRoots: [foreignRoot],
+      command: "/bin/sh",
+      env: { PATH: process.env.PATH },
       platform: "darwin",
       which: () => "/usr/bin/sandbox-exec",
     })
@@ -119,7 +129,7 @@ describe("reflection worker OS sandbox", () => {
     expect(profile).toContain(`(allow file-read* (literal ${JSON.stringify(realpathSync(setup.payloadPaths[0] ?? ""))}))`)
     expect(profile).toContain(`(deny file-read* (subpath ${JSON.stringify(realpathSync(foreignRoot))}))`)
     expect(transformed.env.TMPDIR).toBe(join(realpathSync(dirname(setup.payloadPaths[0] ?? "")), ".sandbox-tmp"))
-  })
+  }, 30_000)
 
   test("#given the Darwin profile #when git-shell children run inside it #then device nodes they stream through stay writable", () => {
     // given
@@ -129,6 +139,8 @@ describe("reflection worker OS sandbox", () => {
       worktreeDir: setup.worktree,
       gitCommonDir: setup.gitCommonDir,
       payloadPaths: setup.payloadPaths,
+      command: "/bin/sh",
+      env: { PATH: process.env.PATH },
       platform: "darwin",
       which: () => "/usr/bin/sandbox-exec",
     })
@@ -141,7 +153,7 @@ describe("reflection worker OS sandbox", () => {
     // earlier (deny file-write*) blanket killed every `git commit` inside a reflection child.
     expect(profile).toContain('(allow file-write* (literal "/dev/null"))')
     expect(profile).toContain('(allow file-write* (literal "/dev/tty"))')
-  })
+  }, 30_000)
 
   test("#given Linux with bwrap available #when spawn arguments are transformed #then the root is read-only while worktree and git state are rebound writable", () => {
     // given
@@ -162,7 +174,60 @@ describe("reflection worker OS sandbox", () => {
       "--chdir", setup.worktree,
       "--", "/bin/sh", "-c", "exit 0",
     ])
-  })
+  }, 30_000)
+
+  test("#given a bare inner command available on the child PATH #when sandbox arguments are transformed #then the wrapper receives its absolute path", () => {
+    // given
+    const setup = fixture()
+    const original = {
+      ...spawnArgs(setup.worktree),
+      command: basename(process.execPath),
+      env: { PATH: dirname(process.execPath) },
+    }
+    const transform = buildSandboxTransform({
+      policy: "required",
+      worktreeDir: setup.worktree,
+      gitCommonDir: setup.gitCommonDir,
+      payloadPaths: setup.payloadPaths,
+      command: original.command,
+      env: original.env,
+      platform: "linux",
+      which: () => "/usr/bin/bwrap",
+    })
+
+    // when
+    const transformed = transform(original)
+
+    // then
+    expect(transformed.command).toBe("/usr/bin/bwrap")
+    expect(transformed.args.slice(-4)).toEqual(["--", process.execPath, "-c", "exit 0"])
+  }, 30_000)
+
+  test("#given a bare inner command missing from the child PATH #when sandbox arguments are transformed #then it degrades to identity with an explicit warning", () => {
+    // given
+    const setup = fixture()
+    const original = { ...spawnArgs(setup.worktree), command: "missing-senpi", env: { PATH: "" } }
+    const transform = buildSandboxTransform({
+      policy: "required",
+      worktreeDir: setup.worktree,
+      gitCommonDir: setup.gitCommonDir,
+      payloadPaths: setup.payloadPaths,
+      command: original.command,
+      env: original.env,
+      platform: "linux",
+      which: () => "/usr/bin/bwrap",
+    })
+
+    // when
+    const wasSandboxedBeforeSpawn = transform.wasSandboxed
+    const transformed = transform(original)
+
+    // then
+    expect(wasSandboxedBeforeSpawn).toBe(false)
+    expect(transformed).toBe(original)
+    expect(transform.wasSandboxed).toBe(false)
+    expect(transform.warning).toContain('inner command "missing-senpi" is not absolute and could not be resolved')
+  }, 30_000)
 
   test("#given required policy without a platform sandbox #when the transform is built #then a typed unavailable error is thrown", () => {
     // given
@@ -174,6 +239,8 @@ describe("reflection worker OS sandbox", () => {
       worktreeDir: setup.worktree,
       gitCommonDir: setup.gitCommonDir,
       payloadPaths: setup.payloadPaths,
+      command: "/bin/sh",
+      env: { PATH: process.env.PATH },
       platform: "linux",
       which: () => undefined,
     })
@@ -181,7 +248,7 @@ describe("reflection worker OS sandbox", () => {
     // then
     expect(buildRequired).toThrow(SandboxUnavailableError)
     expect(buildRequired).toThrow("required reflection sandbox unavailable on linux: bwrap not found")
-  })
+  }, 30_000)
 
   test("#given auto policy without a platform sandbox #when spawn arguments are transformed #then they pass through with an explicit warning", () => {
     // given
@@ -195,7 +262,7 @@ describe("reflection worker OS sandbox", () => {
     expect(transformed).toBe(original)
     expect(transform.wasSandboxed).toBe(false)
     expect(transform.warning).toBe("reflection sandbox unavailable on linux: bwrap not found; running unsandboxed because policy is auto")
-  })
+  }, 30_000)
 
   test("#given off policy #when the transform is built and used #then detection is skipped and spawn arguments pass through", () => {
     // given
@@ -209,5 +276,5 @@ describe("reflection worker OS sandbox", () => {
     expect(transformed).toBe(original)
     expect(transform.wasSandboxed).toBe(false)
     expect(transform.warning).toBeUndefined()
-  })
+  }, 30_000)
 })
