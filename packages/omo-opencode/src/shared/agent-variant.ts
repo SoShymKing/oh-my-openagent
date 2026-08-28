@@ -1,7 +1,7 @@
 import { normalizeReasoning } from "@oh-my-opencode/model-core"
 import type { GetModelCapabilitiesInput } from "@oh-my-opencode/model-core"
 import type { OhMyOpenCodeConfig } from "../config"
-import { stripInvisibleAgentCharacters } from "./agent-display-names"
+import { getAgentConfigKey, stripInvisibleAgentCharacters } from "./agent-display-names"
 import { getModelCapabilities } from "./model-capabilities"
 import { AGENT_MODEL_REQUIREMENTS, CATEGORY_MODEL_REQUIREMENTS } from "./model-requirements"
 
@@ -52,11 +52,11 @@ function findAgentOverride(
   config: OhMyOpenCodeConfig,
   agentName: string,
 ): ReasoningConfig | undefined {
-  const stripped = stripInvisibleAgentCharacters(agentName)
+  const lookupKey = getAgentConfigKey(agentName)
   const agentOverrides = config.agents as Record<string, ReasoningConfig> | undefined
   return agentOverrides
-    ? agentOverrides[stripped]
-      ?? Object.entries(agentOverrides).find(([key]) => key.toLowerCase() === stripped.toLowerCase())?.[1]
+    ? agentOverrides[lookupKey]
+      ?? Object.entries(agentOverrides).find(([key]) => key.toLowerCase() === lookupKey.toLowerCase())?.[1]
     : undefined
 }
 
@@ -124,16 +124,4 @@ function findEntryInChain(
   // Some providers expose identical model IDs (e.g. OpenAI models via different providers).
   // If we didn't find an exact provider+model match, fall back to model-only matching.
   return fallbackChain.find((entry) => entry.model === currentModel.modelID)
-}
-
-export function applyAgentVariant(
-  config: OhMyOpenCodeConfig,
-  agentName: string | undefined,
-  message: { variant?: string },
-  currentModel: { providerID: string; modelID: string },
-): void {
-  const variant = resolveAgentVariant(config, agentName)
-  if (variant === undefined || message.variant !== undefined) return
-
-  Object.assign(message, lowerReasoningForModel(variant, currentModel))
 }

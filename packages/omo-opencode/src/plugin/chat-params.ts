@@ -1,4 +1,6 @@
-import { isRecord } from "@oh-my-opencode/utils"
+import { deepMerge, isRecord } from "@oh-my-opencode/utils"
+import type { OhMyOpenCodeConfig } from "../config"
+import { lowerReasoningForModel, resolveAgentVariant } from "../shared/agent-variant"
 import { getSessionPromptParams } from "../shared/session-prompt-params-state"
 import { getModelCapabilities, log, resolveCompatibleModelSettings } from "../shared"
 
@@ -13,7 +15,7 @@ export type ChatParamsInput = {
 }
 
 type ChatParamsHookInput = ChatParamsInput & {
-  rawMessage?: Record<string, unknown>
+  runtimeModel: Record<string, unknown>
 }
 
 export type ChatParamsOutput = {
@@ -68,7 +70,7 @@ function buildChatParamsInput(raw: unknown): ChatParamsHookInput | null {
     model: { providerID, modelID },
     provider: { id: providerId },
     message,
-    rawMessage: message,
+    runtimeModel: model,
   }
 }
 
@@ -80,14 +82,39 @@ function isChatParamsOutput(raw: unknown): raw is ChatParamsOutput {
   return isRecord(raw.options)
 }
 
-export function createChatParamsHandler(_args: {
+export function createChatParamsHandler(args: {
   client?: unknown
+  pluginConfig?: OhMyOpenCodeConfig
 } = {}): (input: unknown, output: unknown) => Promise<void> {
   return async (input, output): Promise<void> => {
     const normalizedInput = buildChatParamsInput(input)
     if (!normalizedInput) return
     if (!isChatParamsOutput(output)) return
 
+    let configuredReasoningEffort: string | undefined
+    if (args.pluginConfig && typeof normalizedInput.message.variant !== "string") {
+      const reasoning = resolveAgentVariant(args.pluginConfig, normalizedInput.agent.name)
+      const lowered = lowerReasoningForModel(reasoning, {
+        providerID: normalizedInput.model.providerID,
+        modelID: normalizedInput.model.modelID,
+        runtimeModel: normalizedInput.runtimeModel,
+      })
+      const variants = normalizedInput.runtimeModel.variants
+      const preset = lowered.variant !== undefined && isRecord(variants)
+        ? variants[lowered.variant]
+        : undefined
+      if (isRecord(preset)) {
+        output.options = deepMerge(output.options, preset)
+        if (typeof preset.reasoningEffort === "string") {
+          configuredReasoningEffort = preset.reasoningEffort
+        }
+      } else if (lowered.reasoningEffort !== undefined) {
+        output.options.reasoningEffort = lowered.reasoningEffort
+        configuredReasoningEffort = lowered.reasoningEffort
+      }
+    }
+
+    let hasStoredReasoningEffortOverride = false
     const storedPromptParams = getSessionPromptParams(normalizedInput.sessionID)
     if (storedPromptParams) {
       if (storedPromptParams.temperature !== undefined) {
@@ -103,6 +130,7 @@ export function createChatParamsHandler(_args: {
         (output as Record<string, unknown>).maxOutputTokens = storedPromptParams.maxOutputTokens
       }
       if (storedPromptParams.options) {
+        hasStoredReasoningEffortOverride = "reasoningEffort" in storedPromptParams.options
         output.options = {
           ...output.options,
           ...storedPromptParams.options,
@@ -133,17 +161,10 @@ export function createChatParamsHandler(_args: {
       capabilities,
     })
 
-    if (normalizedInput.rawMessage) {
-      if (compatibility.variant !== undefined) {
-        normalizedInput.rawMessage.variant = compatibility.variant
-      } else {
-        delete normalizedInput.rawMessage.variant
-      }
-    }
-    normalizedInput.message = normalizedInput.rawMessage as { variant?: string }
-
     if (compatibility.reasoningEffort !== undefined) {
       output.options.reasoningEffort = compatibility.reasoningEffort
+    } else if (configuredReasoningEffort !== undefined && !hasStoredReasoningEffortOverride) {
+      output.options.reasoningEffort = configuredReasoningEffort
     } else if ("reasoningEffort" in output.options) {
       delete output.options.reasoningEffort
     }
