@@ -127,7 +127,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })
@@ -802,7 +802,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })
@@ -997,7 +997,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })
@@ -1107,7 +1107,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })
@@ -1270,7 +1270,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })
@@ -1399,7 +1399,7 @@ describe("createEventHandler - model fallback", () => {
         keywordDetector: null,
         claudeCodeHooks: null,
         autoSlashCommand: null,
-        startWork: null,
+        ulwExecute: null,
         ralphLoop: null,
       }),
     })

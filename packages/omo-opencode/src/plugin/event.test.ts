@@ -1449,7 +1449,7 @@ describe("createEventHandler - retry dedupe lifecycle", () => {
 				keywordDetector: null,
 				claudeCodeHooks: null,
 				autoSlashCommand: null,
-				startWork: null,
+				ulwExecute: null,
 				ralphLoop: null,
 			}),
 		})

@@ -19,13 +19,15 @@ Reading this file is not planning. Before `start`, write the run plan in one bre
 
 **Do not split when:** (1) the pieces would share a write scope you cannot untangle - serialize or merge instead of pretending independence; (2) the work is one coherent judgment that needs the whole problem in view (a design decision, a root-cause diagnosis) - splitting it produces confident partial answers, not a verdict; (3) the pieces get so small that spawn and coordination overhead costs more than the work itself - a node that takes longer to brief than to execute belongs folded into its neighbor.
 
-**Wave sizing.** Target 5-8 nodes per parallel wave; fewer than 3 means under-splitting. A wave of eight `quick` nodes is healthier than a wave of three `deep` ones. Split along the axis that makes pieces independent:
+**Wave sizing.** Size the wave to the work's natural grain: one node per genuinely independent chunk, whether that is five or sixty. Fewer than 3 means under-splitting. A wave of twelve `quick` nodes is healthier than a wave of three `deep` ones. Never merge independent chunks to make a wave look smaller - the slot limiter (capacity model below) serializes execution, and on `quick` map/research waves coverage beats cost: budget discipline lives in category routing, not node count. A wave wider than ~10 fans in through aggregator or verification nodes reading bounded per-node file reports - the lead never reads N raw outputs. Split along the axis that makes pieces independent:
 
 - **By component** - each independently-shippable part is its own lane.
 - **By file domain** - when one component spans disjoint file sets, one node per set.
 - **By phase** - collect lanes (investigate, in parallel) -> verify lanes (falsify the collections) -> synthesize (turn verified facts into the deliverable).
 
 **Default shape is fan-out, then fan-in.** N parallel lanes with no dependencies, then one synthesis node that depends on all of them. The synthesis node starts cheap too (`quick` or `unspecified-low`): merging verified pieces is mechanical unless the merge itself needs judgment. A 2-node graph with no dependency between the nodes is not a dag - use plain parallel `task` spawns instead. Reach for `dag` when ordering itself is the point.
+
+**Mass harvests: nodes are not units of work.** When a research or scan wave must cover thousands of sources or files (a 10,000-source harvest is legitimate when the work demands it), shard items INTO nodes instead of one node per item: each `quick` node owns a batch sized by its report contract - collect ~50-200 items and write ONE bounded file report (<= 5k tokens) to a ledger path - so `N_nodes = ceil(total_items / items_per_node)`. Under the default caps that is ~100k items per session before touching a knob; past one run's cap, chain runs with the multi-run composition below and give every run its own aggregator node, so synthesis reads per-run digests, never raw node outputs.
 
 **Split implementation from its test? No.** One node owns one deliverable end to end: the change AND its proof. A node that only writes code and a node that only tests it serialize on the same files and double the coordination cost.
 
@@ -59,7 +61,7 @@ A graph whose every node is `deep` is a routing failure: it pays the most expens
 - **Disjoint write scopes or serialize.** No two nodes that can run in parallel may edit the same file. If two lanes must touch the same files, chain them with `dependsOn` or merge them into one node. Declare each node's read/write scope inside its prompt.
 - **Never add a dependency to pass data.** If node B needs a fact node A produces, that is a real dependency - but if B only needs a fact YOU already know, paste the fact into B's prompt and leave the edge out.
 - **Dependency matrix self-check before `start`:** every `dependsOn` id exists in the graph; no cycles; no node depends on something it does not actually consume; every wave has at least one runnable node.
-- **Capacity model.** Nodes run as background tasks under a per-model slot limiter - default 5 concurrent, overridable via `task.default_concurrency` / provider / model concurrency in omo config (0 = unbounded). Nodes past the limit queue FIFO and roll in as slots free, so a wave wider than the slots still completes, serialized in chunks. Hard caps: 64 nodes per run, 16 runs per session. The wave-sizing target above is this slot budget, not a taste number.
+- **Capacity model.** Nodes run as background tasks under a per-model slot limiter - default 5 concurrent, overridable via `task.default_concurrency` / provider / model concurrency in omo config (0 = unbounded). Nodes past the limit queue FIFO and roll in as slots free, so a wave wider than the slots still completes, serialized in chunks: width costs queue time, never correctness - raise `task.default_concurrency` when wall-clock matters. Caps default to 64 nodes per run and 16 runs per session; `task.dag.max_nodes_per_run` / `task.dag.max_runs_per_session` raise them when a run genuinely needs more.
 
 ## Eval orchestration patterns
 
@@ -117,7 +119,7 @@ A node prompt is the ONLY thing the worker sees. It has no conversation history,
 
 1. **TASK** - one imperative sentence naming the deliverable.
 2. **DELIVERABLE** - the concrete artifact returned: files changed, the exact report shape, the evidence produced.
-3. **SCOPE** - what the node may read and what it may write, with exact paths. Name what is OUT of scope when a neighboring node owns it.
+3. **SCOPE** - what the node may read and what it may write, with exact paths, stated as a HARD boundary the prompt forbids crossing. Name what is OUT of scope when a neighboring node owns it or the node could plausibly wander there - an explicit bound is what makes drift detectable.
 4. **VERIFY** - the check the node runs on its own work before reporting: the literal command and its expected result.
 5. **STOP WHEN** - the single observable condition that ends the node's run.
 

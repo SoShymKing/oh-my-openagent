@@ -96,6 +96,13 @@ function foldSendOutcome(
         settled: watchRevived?.(nodeId, taskId) ?? watchRevivedTask(options, nodeId, taskId),
       }
     }
+    case "capacity_deferred":
+      throw new DagNodeControlError({
+        code: "node_not_continuable",
+        message: `dag node "${nodeId}" could not revive: ${outcome.reason}`,
+        runId,
+        nodeIds: [nodeId],
+      })
     case "one_shot_agent":
       throw new DagNodeControlError({
         code: "node_not_continuable",
@@ -127,8 +134,9 @@ function foldSendOutcome(
   }
 }
 
-// A revived child settles OUTSIDE any wave: no wave loop is awaiting this task, so the send arms the
-// one watcher that folds its new terminal outcome and persists its result exactly once.
+// A revived child can settle OUTSIDE the live settle loop (the run may already be quiescent):
+// no admission pass is necessarily awaiting this task, so the send arms the one watcher that folds
+// its new terminal outcome and persists its result exactly once.
 async function watchRevivedTask(
   options: DagSchedulerOptions,
   nodeId: DagNodeId,

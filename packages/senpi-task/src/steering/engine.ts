@@ -90,13 +90,22 @@ export function createSteeringEngine(port: SteeringPort): SteeringEngine {
   }
 
   async function reviveTerminal(record: TaskRecord, handle: ManagedChildHandle, message: string): Promise<SendOutcome> {
-    // Revive is a follow-up prompt on the SAME session (codex followup_task), not a fresh child.
-    await handle.followUp(message)
-    const revived = buildRevived(record, nowIso())
-    port.store.replace(revived)
-    port.store.appendEvent(record.task_id, { type: "revived", payload: { run_epoch: revived.notification.run_epoch } })
-    port.reacquireForRevive(record.task_id)
-    return { kind: "revived", task_id: record.task_id, run_epoch: revived.notification.run_epoch }
+    const reservation = port.reserveForRevive(record.task_id)
+    if (!reservation.ok) {
+      return { kind: "capacity_deferred", task_id: record.task_id, reason: "Task capacity is full; retry explicitly." }
+    }
+    try {
+      // Revive is a follow-up prompt on the SAME session (codex followup_task), not a fresh child.
+      await handle.followUp(message)
+      const revived = buildRevived(record, nowIso())
+      port.store.replace(revived)
+      port.store.appendEvent(record.task_id, { type: "revived", payload: { run_epoch: revived.notification.run_epoch } })
+      reservation.commit()
+      return { kind: "revived", task_id: record.task_id, run_epoch: revived.notification.run_epoch }
+    } catch (error) {
+      reservation.release()
+      throw error
+    }
   }
 
   function enqueuePending(record: TaskRecord, message: string, deliverAs: SendDelivery): SendOutcome {
