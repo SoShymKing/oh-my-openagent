@@ -298,13 +298,13 @@ describe("createPluginInterface - backward compatibility", () => {
 })
 
 describe("createPluginInterface - chat.params variant injection", () => {
-  test("injects variant from agent config into chat.params message", async () => {
+  test("merges the configured reasoning preset into chat.params output without mutating input", async () => {
     // given
     const pluginInterface = createPluginInterface({
       ctx: { client: {} } as never,
       pluginConfig: {
         agents: {
-          sisyphus: { variant: "max" },
+          sisyphus: { reasoning: "high" },
         },
       } as never,
       firstMessageVariantGate: {
@@ -317,20 +317,70 @@ describe("createPluginInterface - chat.params variant injection", () => {
       hooks: {} as never,
       tools: {},
     })
+    const message = Object.freeze({})
     const input = {
-      sessionID: "ses-variant-inject",
+      sessionID: "ses-reasoning-preset",
       agent: "sisyphus",
-      model: { providerID: "anthropic", modelID: "claude-opus-4-6" },
+      model: {
+        providerID: "anthropic",
+        modelID: "claude-opus-4-6",
+        variants: {
+          high: { reasoningEffort: "high", qaPreset: true },
+        },
+      },
       provider: { id: "anthropic" },
-      message: {} as { variant?: string },
+      message,
     }
-    const output = { options: {} }
+    const output: {
+      options: { reasoningEffort?: string; qaPreset?: boolean }
+    } = { options: {} }
 
     // when
     await pluginInterface["chat.params"]?.(input as never, output as never)
 
     // then
-    expect(input.message.variant).toBe("max")
+    expect(input.message).toBe(message)
+    expect(input.message).toEqual({})
+    expect(output.options.reasoningEffort).toBe("high")
+    expect(output.options.qaPreset).toBe(true)
+  })
+
+  test("uses configured reasoning in chat.params output when the model has no preset", async () => {
+    // given
+    const pluginInterface = createPluginInterface({
+      ctx: { client: {} } as never,
+      pluginConfig: {
+        agents: {
+          sisyphus: { reasoning: "high" },
+        },
+      } as never,
+      firstMessageVariantGate: {
+        shouldOverride: () => false,
+        markApplied: () => {},
+        markSessionCreated: () => {},
+        clear: () => {},
+      },
+      managers: {} as never,
+      hooks: {} as never,
+      tools: {},
+    })
+    const message = Object.freeze({})
+    const input = {
+      sessionID: "ses-reasoning-no-preset",
+      agent: "sisyphus",
+      model: { providerID: "test-provider", modelID: "test-model" },
+      provider: { id: "test-provider" },
+      message,
+    }
+    const output: { options: { reasoningEffort?: string } } = { options: {} }
+
+    // when
+    await pluginInterface["chat.params"]?.(input as never, output as never)
+
+    // then
+    expect(input.message).toBe(message)
+    expect(input.message).toEqual({})
+    expect(output.options.reasoningEffort).toBe("high")
   })
 
   test("does not overwrite existing variant in chat.params message", async () => {
