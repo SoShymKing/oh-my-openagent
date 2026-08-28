@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { OhMyOpenCodeConfigSchema } from "../config"
 import { createChatParamsHandler, type ChatParamsOutput } from "./chat-params"
 import * as dataPathModule from "../shared/data-path"
 import * as sharedModule from "../shared"
@@ -106,6 +107,54 @@ describe("createChatParamsHandler", () => {
         thinking: { type: "disabled" },
       },
     })
+  })
+
+  test("keeps stored reasoning effort over a conflicting configured preset", async () => {
+    //#given
+    sharedModule.writeProviderModelsCache({
+      connected: ["openai"],
+      models: {
+        openai: [
+          {
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+            reasoning: true,
+            variants: {
+              low: {},
+              high: {},
+            },
+          },
+        ],
+      },
+    })
+    setSessionPromptParams("ses_chat_params", {
+      options: { reasoningEffort: "low" },
+    })
+    const handler = createChatParamsHandler({
+      pluginConfig: OhMyOpenCodeConfigSchema.parse({
+        agents: { oracle: { reasoning: "high" } },
+      }),
+    })
+    const input = {
+      sessionID: "ses_chat_params",
+      agent: { name: "oracle" },
+      model: {
+        providerID: "openai",
+        modelID: "gpt-5.4",
+        variants: {
+          high: { reasoningEffort: "high", qaPreset: true },
+        },
+      },
+      provider: { id: "openai" },
+      message: {},
+    }
+    const output: ChatParamsOutput = { options: {} }
+
+    //#when
+    await handler(input, output)
+
+    //#then
+    expect(output.options).toEqual({ reasoningEffort: "low", qaPreset: true })
   })
 
   test("drops gpt-5.4 temperature and clamps maxOutputTokens from bundled model capabilities", async () => {
@@ -247,5 +296,29 @@ describe("createChatParamsHandler", () => {
 
     //#then
     expect(output.maxOutputTokens).toBe(4096)
+  })
+
+  test("preserves expanded options for a frozen explicit variant", async () => {
+    //#given
+    const handler = createChatParamsHandler()
+    const message = Object.freeze({ variant: "high" })
+    const input = {
+      sessionID: "ses_chat_params_frozen_explicit_variant",
+      agent: { name: "oracle" },
+      model: { providerID: "openai", modelID: "gpt-5.4" },
+      provider: { id: "openai" },
+      message,
+    }
+    const output: ChatParamsOutput = {
+      options: { reasoningEffort: "high", qaPreset: true },
+    }
+
+    //#when
+    await handler(input, output)
+
+    //#then
+    expect(input.message).toBe(message)
+    expect(input.message).toEqual({ variant: "high" })
+    expect(output.options).toEqual({ reasoningEffort: "high", qaPreset: true })
   })
 })
