@@ -5,6 +5,7 @@ import type {
 } from "./dynamic-agent-prompt-types"
 import type { AvailableTool } from "./dynamic-agent-prompt-types"
 import { getToolsPromptDisplay } from "./dynamic-agent-tool-categorization"
+import { OMO_INTERNAL_INITIATOR_MARKER } from "../shared/internal-initiator-marker"
 
 /**
  * Builds an explicit agent identity preamble that overrides any base system prompt identity.
@@ -192,6 +193,8 @@ export function buildNonClaudePlannerSection(model: string): string {
   }
 
   return `### Plan Agent Dependency (Non-Claude)
+
+If the latest user message contains \`${OMO_INTERNAL_INITIATOR_MARKER}\`, it is a compaction continuation. Resume the existing plan, todos, and delegated \`task_id\` sessions; do not consult Plan Agent again or treat it as a new request.
 
 Multi-step task? **ALWAYS consult Plan Agent first.** Do NOT start implementation without a plan.
 

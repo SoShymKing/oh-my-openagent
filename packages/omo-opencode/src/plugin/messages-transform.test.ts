@@ -532,6 +532,34 @@ describe("createMessagesTransformHandler", () => {
     expect(messages.at(-1)?.info.role).toBe("assistant")
   })
 
+  it("#given a native compaction continuation without an internal marker #when messages transform runs twice #then it marks only the continuation exactly once", async () => {
+    //#given
+    const ordinaryText = "keep this request unchanged"
+    const continuationText = "[internal] Continue from the previous assistant state."
+    const messages: TestMessage[] = [
+      { info: { role: "user" }, parts: [{ type: "text", text: ordinaryText }] },
+      {
+        info: { role: "user" },
+        parts: [{
+          type: "text",
+          text: continuationText,
+          synthetic: true,
+          metadata: { compaction_continue: true },
+        }],
+      },
+    ]
+
+    //#when
+    await runHandler(makeHooks({}), messages)
+    await runHandler(makeHooks({}), messages)
+
+    //#then
+    expect(messages[0]?.parts[0]?.text).toBe(ordinaryText)
+    expect(messages[1]?.parts[0]?.text).toBe(
+      `${continuationText}\n${OMO_INTERNAL_INITIATOR_MARKER}`,
+    )
+  })
+
   it("#given hooks leave an unsupported assistant tail #when messages transform runs #then recovery happens after hook validation", async () => {
     //#given
     const observedTailRoles: Array<TestMessage["info"]["role"] | undefined> = []

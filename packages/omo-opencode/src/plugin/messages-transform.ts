@@ -1,6 +1,7 @@
 import { isRecord } from "@oh-my-opencode/utils"
 import type { Message, Part } from "@opencode-ai/sdk"
 
+import { createInternalAgentTextPart } from "../shared/internal-initiator-marker"
 import { log } from "../shared/logger"
 import { normalizeModelID } from "../shared/model-normalization"
 import type { CreatedHooks } from "../create-hooks"
@@ -247,6 +248,12 @@ export function createMessagesTransformHandler(args: {
   hooks: MessagesTransformHooks
 }): (input: Record<string, never>, output: MessagesTransformOutput) => Promise<void> {
   return async (input, output): Promise<void> => {
+    for (const part of findLastUserTurn(output.messages)?.parts ?? []) {
+      if (part.type === "text" && isCompactionContinuationPart(part)) {
+        part.text = createInternalAgentTextPart(part.text).text
+      }
+    }
+
     for (const hook of MESSAGES_TRANSFORM_HOOKS) {
       const handler =
         args.hooks[hook.key]?.["experimental.chat.messages.transform"]

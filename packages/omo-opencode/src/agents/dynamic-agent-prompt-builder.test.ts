@@ -10,6 +10,7 @@ import {
   type AvailableCategory,
   type AvailableSkill,
 } from "./dynamic-agent-prompt-builder"
+import { OMO_INTERNAL_INITIATOR_MARKER } from "../shared/internal-initiator-marker"
 
 describe("buildCategorySkillsDelegationGuide", () => {
   it("returns empty output only when both inputs are empty", () => {
@@ -102,6 +103,7 @@ describe("buildNonClaudePlannerSection", () => {
 
     expect(geminiResult).toBe(gptResult)
     expect(geminiResult).not.toBe(claudeResult)
+    expect(gptResult).toContain(OMO_INTERNAL_INITIATOR_MARKER)
     expect(claudeResult).toBe("")
   })
 })
