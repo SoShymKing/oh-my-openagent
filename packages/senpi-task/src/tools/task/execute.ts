@@ -8,7 +8,7 @@ import type { ForegroundWaitOptions } from "./foreground-wait"
 import { evaluateSpawnPolicy } from "./spawn-policy"
 import type { TaskToolParamsStatic } from "./params"
 import type { ResolvedSpawnItem, TaskSkillSummary, TaskToolContext, TaskToolDeps, TaskToolDetails } from "./types"
-import { resolveSpawnItems, validateBatchShape, validateTaskTarget } from "./validation"
+import { resolveRunInBackground, resolveSpawnItems, validateBatchShape, validateTaskTarget } from "./validation"
 
 type TaskExecute = (
   toolCallId: string,
@@ -31,6 +31,10 @@ export function buildTaskExecute(deps: TaskToolDeps, options: ForegroundWaitOpti
     const shape = validateBatchShape(params)
     if (shape.kind === "error") return invalidArguments(shape.error.message)
 
+    const background = resolveRunInBackground(params)
+    if (background.kind === "error") return invalidArguments(background.error.message)
+    const runInBackground = background.runInBackground
+
     const resolved = resolveSpawnItems(params)
     if (resolved.kind === "error") {
       if (shape.kind === "single" && resolved.error.code === "item_target") {
@@ -44,7 +48,7 @@ export function buildTaskExecute(deps: TaskToolDeps, options: ForegroundWaitOpti
     if (first === undefined) return invalidArguments("Provide at least one task item.")
     if (resolved.items.length === 1) {
       return runSpawn(deps, {
-        params: singleSpawnParams(first, params.run_in_background),
+        params: singleSpawnParams(first, runInBackground),
         signal,
         onUpdate,
         ctx,
@@ -55,17 +59,18 @@ export function buildTaskExecute(deps: TaskToolDeps, options: ForegroundWaitOpti
 
     const parentSessionId = ctx.sessionManager.getSessionId()
     const skillSummaries = new WeakMap<ResolvedSpawnItem, TaskSkillSummary>()
-    return executeBatch({
+    const batchResult = await executeBatch({
       manager: deps.manager,
       items: resolved.items,
       signal,
       ctx,
-      runInBackground: params.run_in_background === true,
+      ...(onUpdate !== undefined && { onUpdate }),
+      runInBackground: runInBackground === true,
       ...(options.env !== undefined && { env: options.env }),
       ...(options.scheduleDeadline !== undefined && { scheduleDeadline: options.scheduleDeadline }),
       skillSummaryFor: (item) => skillSummaries.get(item),
       startItem: async (item) => {
-        let itemParams = singleSpawnParams(item, params.run_in_background)
+        let itemParams = singleSpawnParams(item, runInBackground)
         const target = item.kind === "category" ? { category: item.category } : { subagentType: item.subagentType }
         if (item.kind === "subagent_type") {
           const policy = evaluateSpawnPolicy(deps, item.subagentType, itemParams.prompt, parentSessionId)
@@ -84,5 +89,6 @@ export function buildTaskExecute(deps: TaskToolDeps, options: ForegroundWaitOpti
         return deps.manager.start(spec)
       },
     })
+    return batchResult
   }
 }

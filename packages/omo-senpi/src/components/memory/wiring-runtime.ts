@@ -24,7 +24,6 @@ import { resolveReflectionTriggerConfig, type ReflectionTriggerSession } from ".
 import { isRecord, sessionIdFrom } from "./wiring-context"
 import type { MemoryWiringOptions } from "./wiring-types"
 import type { ReflectionLiveSession, ReflectionSessionModel } from "./worker"
-import { buildFactsSandboxTransform, type SandboxPolicy } from "./sandbox"
 
 export interface MemoryRuntimeWiring {
   resolveContext(sessionId: string): MemoryIdentityContext | undefined
@@ -92,8 +91,6 @@ export function createMemoryRuntimeWiring(
     const cached = factsWirings.get(identity.identity)
     if (cached !== undefined) return cached
     const settings = resolveMemorySettings(options.loadConfig({ cwd: options.cwd() }).config.memory)
-    const sandboxPolicy = settings.agents[identity.identity]?.reflection?.sandbox
-      ?? settings.reflection.sandbox
     const createExtractor = options.createFactsExtractor
       ?? ((extractorOptions) => new FactsExtractorRunner(extractorOptions))
     const extractor = createExtractor({
@@ -106,14 +103,6 @@ export function createMemoryRuntimeWiring(
       loadConfig: () => options.loadConfig({ cwd: options.cwd() }),
       resolveModelRegistry,
       env: options.env,
-      sandbox: buildFactsSandboxTransform({
-        policy: sandboxPolicy as SandboxPolicy,
-        onWarning: (warning, spawnArgs) => options.logger?.warn("memory facts sandbox degraded", {
-          identity: identity.identity,
-          runId: spawnArgs.runId,
-          warning,
-        }),
-      }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     })
     const wiring = createMemoryFactsWiring({

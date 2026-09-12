@@ -18,6 +18,7 @@ import { resolveMetadataModel } from "./resolve-metadata-model"
 import { shouldAttemptPollErrorRecovery } from "./sync-poll-error-recovery"
 import { clearDelegateTaskSyncSession, clearSyncSessionError, registerDelegateTaskSyncSession } from "../../shared/sync-session-error-store"
 import { log } from "../../shared/logger"
+import { cancelSyncSessionDeletion, scheduleSyncSessionDeletion } from "./sync-session-cleanup"
 
 type ResumeModel = { providerID: string; modelID: string }
 
@@ -26,6 +27,7 @@ type ResumeContext = {
   resumeModel?: ResumeModel
   resumeVariant?: string
   anchorMessageCount?: number
+  anchorMessageID?: string
 }
 
 async function resolveResumeContext(
@@ -46,11 +48,12 @@ async function resolveResumeContext(
             : undefined),
           resumeVariant: info.variant,
           anchorMessageCount: messages.length,
+          anchorMessageID: messages.at(-1)?.info?.id,
         }
       }
     }
 
-    return { anchorMessageCount: messages.length }
+    return { anchorMessageCount: messages.length, anchorMessageID: messages.at(-1)?.info?.id }
   } catch (error) {
     if (!(error instanceof Error)) throw error
     const resumeMessageDir = getMessageDir(continuationID)
@@ -83,6 +86,8 @@ export async function executeSyncContinuation(
   if (!continuationID) {
     throw new Error("task_id is required to continue a sync task")
   }
+  cancelSyncSessionDeletion(continuationID)
+  const detachFromManager = executorCtx.manager?.attachSyncContinuation?.(continuationID)
   const taskId = `resume_sync_${continuationID.slice(0, 8)}`
   const startTime = new Date()
 
@@ -99,6 +104,7 @@ export async function executeSyncContinuation(
   let resumeModel: ResumeModel | undefined
   let resumeVariant: string | undefined
   let anchorMessageCount: number | undefined
+  let anchorMessageID: string | undefined
   let handedBackToParent = false
 
   try {
@@ -107,6 +113,7 @@ export async function executeSyncContinuation(
     resumeModel = resumeContext.resumeModel
     resumeVariant = resumeContext.resumeVariant
     anchorMessageCount = resumeContext.anchorMessageCount
+    anchorMessageID = resumeContext.anchorMessageID
 
     const resumeModelForMetadata = resumeModel && resumeVariant !== undefined
       ? { ...resumeModel, variant: resumeVariant }
@@ -165,6 +172,8 @@ export async function executeSyncContinuation(
       toastManager.removeTask(taskId)
     }
     const errorMessage = promptError instanceof Error ? promptError.message : String(promptError)
+    detachFromManager?.()
+    scheduleSyncSessionDeletion(client, continuationID)
     return `Failed to send continuation prompt: ${errorMessage}\n\nTask ID: ${continuationID}`
   }
 
@@ -176,6 +185,7 @@ export async function executeSyncContinuation(
       toastManager,
       taskId,
       anchorMessageCount,
+      anchorMessageID,
       hasActiveChildBackgroundTasks,
       hasPendingParentWake,
     }, syncPollTimeoutMs)
@@ -244,5 +254,7 @@ ${buildTaskMetadataBlock({
         })
       }
     }
+    detachFromManager?.()
+    scheduleSyncSessionDeletion(client, continuationID)
   }
 }

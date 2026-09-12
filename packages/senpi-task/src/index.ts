@@ -115,6 +115,7 @@ export {
   mergeChildCustomTools,
 } from "./runners"
 export type {
+  ChildCompletionPolicy,
   ChildHandle,
   ChildSession,
   ChildSessionEvent,
@@ -135,9 +136,11 @@ export {
   buildAutoUiResponse,
   buildChildArgs,
   buildRpcSpawn,
+  OMO_SENPI_TASK_RPC_CHILD,
   classifyChildExit,
   createRpcChildHandle,
   detectBunBinary,
+  detectCompiledEngine,
   mapExitOutcomeToError,
   parseExtensionEntries,
   resolveChildSessionDir,
@@ -216,6 +219,7 @@ export {
   BUILTIN_AGENTS,
   BUILTIN_AGENT_DEFAULTS,
   CURATED_READONLY_AGENT_NAMES,
+  ULW_REVIEWER_AGENT_NAMES,
   EMPTY_SKILL_INVOCATIONS,
   PLAN_GATED_AGENT_NAMES,
   defineAgent,
@@ -274,6 +278,7 @@ export type {
   ParentNotifier,
   ParentNotifierMessage,
   ParentState,
+  RecordDeliveryFailureInput,
   RoutingDecision,
   SkipReason,
   TransitionReason,
@@ -281,13 +286,16 @@ export type {
 export {
   AgentLimitReached,
   createTaskLifecycle,
+  getLifecycleDetachedRevivalRollback,
   getLifecycleReattachPorts,
+  registerLifecycleDetachedRevivalRollback,
   registerLifecycleReattachPorts,
 } from "./lifecycle"
 export type {
   AdmissionResult,
   CleanupResult,
   DestroyCause,
+  DetachedRevivalRollbackResult,
   LifecycleDeps,
   LifecycleReattachPorts,
   ProcessSignaller,

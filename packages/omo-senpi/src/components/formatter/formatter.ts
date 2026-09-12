@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, extname, relative, resolve } from "node:path"
 import { spawn } from "node:child_process"
 import { execFileSync } from "node:child_process"
-import { resolveServerBinary } from "@oh-my-opencode/lsp-core"
+import { createSpawnCommand, resolveServerBinary } from "@oh-my-opencode/lsp-core"
 import { callPackagedDaemonTool } from "../lsp/daemon-tool-client"
 import { extractMutatedFilePaths, MUTATION_TOOL_NAMES, runSingleFlight, type PostMutationEvent } from "../post-mutation/post-mutation"
 
@@ -11,6 +11,11 @@ export const formatOnMutationDefaults = { mode: "best-effort", maxFileBytes: 1_0
 export type FormatMode = "off" | "best-effort" | "required"
 export type FormatterTool = "biome" | "prettier" | "rustfmt" | "gofmt" | "ruff"
 export type Formatter = { readonly tool: FormatterTool; readonly command: string; readonly args: readonly string[] }
+
+// Sentinel for "the child never started": a non-numeric variant so no real exit code —
+// including negative Windows NTSTATUS-style codes — can be mistaken for it. The caller
+// reports the formatter as missing instead of treating it as a failed format run.
+type ChildExit = number | "spawn-failed"
 
 export function resolveFormatMode(config: { mode?: FormatMode; languages?: Record<string, boolean> }, language: string): FormatMode {
   if (config.languages?.[language] === false) return "off"
@@ -82,12 +87,29 @@ async function formatOne(filePath: string, formatter: Formatter, cwd: string, ti
   const binary = resolveBinary?.(formatter.command, cwd) ?? resolveServerBinary([formatter.command], cwd)
   if (!binary) return { status: "missing", added: 0, removed: 0 }
   const before = readFileSync(filePath, "utf8")
-  const args = [...formatter.args, filePath]
-  const child = spawn(binary, args, { cwd, stdio: "ignore" })
+  // Windows cannot spawn the extensionless POSIX shim npm/bun writes into node_modules/.bin,
+  // and Node refuses a bare .cmd/.bat since CVE-2024-27980. createSpawnCommand resolves the
+  // real launcher and routes shims through ComSpec as separate argv entries, which keeps the
+  // file path from being reparsed as shell syntax, so reuse it instead of spawning raw.
+  const prepared = createSpawnCommand([binary, ...formatter.args, filePath])
+  let child: ReturnType<typeof spawn>
+  try {
+    child = spawn(prepared.command, prepared.args, { cwd, stdio: "ignore", shell: prepared.shell })
+  } catch {
+    return { status: "missing", added: 0, removed: 0 }
+  }
   const exit = await Promise.race([childExit(child), new Promise<"timeout">(resolve => setTimeout(() => { child.kill("SIGKILL"); resolve("timeout") }, timeoutMs))])
+  if (exit === "spawn-failed") return { status: "missing", added: 0, removed: 0 }
   if (exit !== 0) { writeFileSync(filePath, before); return { status: "unchanged", added: 0, removed: 0 } }
   const after = readFileSync(filePath, "utf8")
   if (after === before) return { status: "unchanged", added: 0, removed: 0 }
   return { status: "formatted", added: Math.max(0, after.split("\n").length - before.split("\n").length), removed: Math.max(0, before.split("\n").length - after.split("\n").length) }
 }
-function childExit(child: ReturnType<typeof spawn>): Promise<number> { return new Promise(resolve => child.once("exit", code => resolve(code ?? 1))) }
+function childExit(child: ReturnType<typeof spawn>): Promise<ChildExit> {
+  return new Promise(resolve => {
+    child.once("exit", code => resolve(code ?? 1))
+    // A child that fails to spawn emits "error" and never "exit". Without this listener Node
+    // re-throws it as an uncaughtException, so one unspawnable formatter kills the whole agent.
+    child.once("error", () => resolve("spawn-failed"))
+  })
+}

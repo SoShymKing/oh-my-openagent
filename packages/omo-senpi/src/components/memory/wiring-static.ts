@@ -18,6 +18,8 @@ import { registerMemorySkillsScope } from "./skills-scope"
 import { registerSkillsUsage, type SkillsUsageTracker } from "./skills-usage"
 import { registerMemoryUsage, type MemoryUsageTracker } from "./memory-usage"
 import type { createMemoryNoticeWiring } from "./memory-notice-wiring"
+import type { KibitzerComposition } from "./kibitzer"
+import type { createMemoryRecallWiring } from "./recall-wiring"
 import { createReflectionTriggerWiring } from "./trigger-wiring"
 import { registerMemoryToolSurface } from "./tools"
 import {
@@ -38,6 +40,8 @@ export function registerMemoryStatic(input: {
   readonly promptCache: MemoryBlockCache
   readonly nudgeWiring: ReturnType<typeof createMemoryNudgeWiring>
   readonly noticeWiring: ReturnType<typeof createMemoryNoticeWiring>
+  readonly recallWiring: ReturnType<typeof createMemoryRecallWiring>
+  readonly kibitzer: KibitzerComposition
   readonly dreamTriggerWiring: DreamTriggerWiring
   readonly completionApi: (pi: SenpiExtensionAPI) => ReflectionCompletionApi | undefined
   readonly resolveContext: (sessionId: string) => MemoryIdentityContext | undefined
@@ -59,7 +63,7 @@ export function registerMemoryStatic(input: {
   readonly onMemoryWrite?: (sessionId: string) => void | Promise<void>
 }): void {
   const {
-    pi, ctx, options, promptCache, nudgeWiring, noticeWiring, dreamTriggerWiring,
+    pi, ctx, options, promptCache, nudgeWiring, noticeWiring, recallWiring, dreamTriggerWiring,
     completionApi, resolveContext, journalWiringFor, factsWiringFor, runtimeFor,
     triggerSessionFor, resolvePalacePeople, loadCommandSettings, lastEventCtx,
     activeSession, skillsUsageTrackersRef, memoryUsageTrackersRef, onReflectionLaunch, onSettled, onMemoryWrite,
@@ -73,11 +77,9 @@ export function registerMemoryStatic(input: {
     nudgeWiring.register(pi)
     noticeWiring.register(pi)
   }
-  const toolExposure = options.toolExposure ?? "direct"
   const promptHandler = createPromptHandler({
     resolveContext,
     cache: promptCache,
-    searchExposure: () => toolExposure === "search",
     resolveCompileWarnTokens: () => loadCommandSettings().settings.compile_warn_tokens,
     resolveNudgeTurns: (repo, sessionId, identity) => nudgeWiring.nudgeTurns(repo, sessionId, identity),
     resolveSoulNotice: async (repo, sessionId, identity) => {
@@ -93,6 +95,15 @@ export function registerMemoryStatic(input: {
     lastEventCtx.current = eventCtx
     return promptHandler(payload, eventCtx)
   })
+  // Recall owns a SEPARATE before_agent_start handler registered AFTER the projection handler:
+  // senpi merges one message per handler in registration order, so the hint lands last and the
+  // prompt handler stays the only writer of systemPrompt.
+  if (hasMemoryCapabilities(pi)) recallWiring.register(pi)
+  // Kibitzer hooks come LAST: their before_agent_start handler only captures the prompt for the
+  // resident sidecar and never contributes a message, so registering it after the projection
+  // handler keeps handler results ordered projection-first, the same invariant the recall
+  // registration above documents. Its agent_settled handler is bookkeeping, never a wake.
+  if (hasMemoryCapabilities(pi)) input.kibitzer.registerHooks(pi)
   pi.on("session_start", (_payload, eventCtx) => {
     if (eventCtx !== undefined) lastEventCtx.current = eventCtx
   })
@@ -114,7 +125,6 @@ export function registerMemoryStatic(input: {
   })
   registerMemoryWriteListener(pi, options, onMemoryWrite)
   registerMemoryToolSurface(pi, () => (activeSession.current === undefined ? undefined : resolveContext(activeSession.current)), {
-    exposure: toolExposure,
     onCommit: (commit) => {
       const context = activeSession.current === undefined ? undefined : resolveContext(activeSession.current)
       if (context !== undefined) noticeWiring.onCommit(context, commit)
@@ -198,6 +208,8 @@ export function registerMemoryStatic(input: {
   const triggerWiring = createReflectionTriggerWiring({
     resolveSession: triggerSessionFor,
     onLaunch: () => {},
+    // A compaction rewrites the transcript the pending nudges were judged against, so they die with it.
+    onCompactionAccepted: (conversationId) => input.kibitzer.onCompactionAccepted(conversationId, resolveContext(conversationId)),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   })
   triggerWiring.register(pi)

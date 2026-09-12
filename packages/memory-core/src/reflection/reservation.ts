@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "../fs/resilient"
 import { hostname } from "node:os"
 import { dirname, join } from "node:path"
 import type { MemoryIdentity } from "../identity"
@@ -39,6 +39,10 @@ export interface ReservationResult {
   readonly run: ReservedRun
 }
 
+export interface ReflectionReservationLockOptions {
+  readonly waitTimeoutMs?: number
+}
+
 export interface CompletionResult {
   readonly outcome: ReflectionOutcome
   readonly launch?: ReservedRun
@@ -70,6 +74,7 @@ export class ReflectionReservationStore {
 
     const evaluated = evaluateTransitions(
       {
+        now: this.now().toISOString(),
         journal: { conversationId, state: await journal.getState(), snapshot: null },
         reservation: await this.readState(),
         config: this.options.config,
@@ -107,7 +112,11 @@ export class ReflectionReservationStore {
     }, signal)
   }
 
-  async complete(runId: string, outcome: ReflectionOutcome): Promise<CompletionResult> {
+  async complete(
+    runId: string,
+    outcome: ReflectionOutcome,
+    lockOptions?: ReflectionReservationLockOptions,
+  ): Promise<CompletionResult> {
     return this.locked(runId, async () => {
       const current = await this.readStateUnlocked()
       const conversationIds = new Set([
@@ -133,6 +142,9 @@ export class ReflectionReservationStore {
         snapshots,
         this.options.config,
       )
+      if (outcome !== "merged" && outcome !== "no_changes" && current.active?.request.trigger !== "manual" && current.active?.request.trigger !== "dream") {
+        for (const id of current.active?.request.conversationIds ?? []) await journals.get(id)?.recordReflectionFailure()
+      }
       for (const captured of transition.finalize) {
         const journal = journals.get(captured.conversationId)
         if (journal) await journal.finalizeReflection(captured.snapshot, true)
@@ -154,11 +166,11 @@ export class ReflectionReservationStore {
         outcome,
         ...(promoted === undefined ? {} : { launch: promoted }),
       }
-    })
+    }, undefined, lockOptions)
   }
 
-  async readState(): Promise<ReservationState> {
-    return this.locked(undefined, () => this.readStateUnlocked())
+  async readState(lockOptions?: ReflectionReservationLockOptions): Promise<ReservationState> {
+    return this.locked(undefined, () => this.readStateUnlocked(), undefined, lockOptions)
   }
 
   private async withLaunchOwner(run: ReservedRun | undefined): Promise<ReservedRun | undefined> {
@@ -173,14 +185,26 @@ export class ReflectionReservationStore {
     }
   }
 
-  private async locked<T>(runId: string | undefined, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async locked<T>(
+    runId: string | undefined,
+    task: () => Promise<T>,
+    signal?: AbortSignal,
+    lockOptions?: ReflectionReservationLockOptions,
+  ): Promise<T> {
     signal?.throwIfAborted()
     const record = await createLockRecord("reflection-scheduler", runId ? { runId } : {})
     signal?.throwIfAborted()
-    return withLock(this.schedulerLockPath, record, task, { waitTimeoutMs: 5_000, signal })
+    return withLock(this.schedulerLockPath, record, task, {
+      waitTimeoutMs: lockOptions?.waitTimeoutMs ?? 5_000,
+      signal,
+    })
   }
 
   private async readStateUnlocked(): Promise<ReservationState> {
+    // The scheduler lock excludes every reservation/dream-state writer, so even fresh
+    // temporaries here belong to an interrupted operation, not another live write.
+    await sweepReservationTemporaries(this.options.identity.paths.reflection, ["active.lock", "pending.json"])
+    await sweepReservationTemporaries(join(this.options.identity.paths.runtime, "dream"), ["state.json"])
     const active = await readRun(this.activePath)
     const pending = await readRun(this.pendingPath)
     return {
@@ -212,8 +236,34 @@ async function readRun(path: string): Promise<ReservedRun | null> {
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   const temporaryPath = `${path}.tmp-${randomUUID()}`
-  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
-  await rename(temporaryPath, path)
+  let renamed = false
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
+    await rename(temporaryPath, path)
+    renamed = true
+  } finally {
+    if (!renamed) {
+      await unlink(temporaryPath).catch((error: unknown) => {
+        if (errorCode(error) !== "ENOENT") throw error
+      })
+    }
+  }
+}
+
+async function sweepReservationTemporaries(directory: string, targets: readonly string[]): Promise<void> {
+  let entries
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return
+    throw error
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !targets.some((target) => entry.name.startsWith(`${target}.tmp-`))) continue
+    await unlink(join(directory, entry.name)).catch((error: unknown) => {
+      if (errorCode(error) !== "ENOENT") throw error
+    })
+  }
 }
 
 async function writeOptionalRun(path: string, run: ReservedRun | undefined): Promise<void> {

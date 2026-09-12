@@ -38,7 +38,7 @@ function expandShortPath(path: string): string {
   }
 }
 
-function createFixture(options: { hoisted?: boolean; shim?: boolean; installLayout?: InstallLayout } = {}): Fixture {
+function createFixture(options: { hoisted?: boolean; scopedEngine?: boolean; shim?: boolean; installLayout?: InstallLayout } = {}): Fixture {
   // Windows hands back the 8.3 short form (RUNNER~1) here while the launcher reports the long path, so
   // the fixture root is canonicalized once and every derived path inherits the same spelling.
   const root = expandShortPath(realpathSync(mkdtempSync(join(tmpdir(), "omo-launcher-"))))
@@ -75,7 +75,10 @@ function createFixture(options: { hoisted?: boolean; shim?: boolean; installLayo
   }
 
   const modulesRoot = options.hoisted ? join(root, "node_modules") : join(packageRoot, "node_modules")
-  const senpiRoot = join(modulesRoot, "@code-yeongyu", "senpi")
+  const senpiRoot = options.scopedEngine
+    ? join(packageRoot, "node_modules", "@code-yeongyu", "senpi")
+    : join(modulesRoot, "@code-yeongyu", "senpi")
+  if (options.scopedEngine) writeFile(join(senpiRoot, "node_modules", ".bin", "dummy"), "decoy\n", 0o755)
   writeFile(join(senpiRoot, "package.json"), JSON.stringify({
     name: "@code-yeongyu/senpi",
     version: "2026.8.9",
@@ -94,7 +97,8 @@ process.exit(Number(process.env.FAKE_EXIT ?? 0))
 
   let shimPath: string | undefined
   if (options.shim !== false) {
-    shimPath = join(modulesRoot, ".bin", process.platform === "win32" ? "senpi.cmd" : "senpi")
+    const shimRoot = options.scopedEngine ? join(packageRoot, "node_modules") : modulesRoot
+    shimPath = join(shimRoot, ".bin", process.platform === "win32" ? "senpi.cmd" : "senpi")
     writeFile(shimPath, "fixture shim\n", 0o755)
     shimPath = expandShortPath(realpathSync(shimPath))
   }
@@ -183,7 +187,9 @@ describe("omo launcher", () => {
         expect(binDir).toBeDefined()
         expect(realpathSync.native(binDir ?? "")).toBe(realpathSync.native(dirname(fixture.shimPath ?? "")))
         expect(existsSync(binDir ?? "")).toBe(true)
-        expect(environment.OMO_AGENT_TOOLKIT_BIN).toBe(join(fixture.packageRoot, "bin", "omo-agent-toolkit.js"))
+        // The Native payload no longer ships a toolkit CLI, so the launcher must not point the env
+        // at its own package; an unrelated inherited value from the parent process may still ride along.
+        expect(environment.OMO_AGENT_TOOLKIT_BIN ?? "").not.toContain(fixture.packageRoot)
         expect(environment.OMO_CODING_AGENT_DIR).toBe(join(home, ".omo", "agent"))
         expect(environment.SENPI_CODING_AGENT_DIR).toBe(join(home, ".omo", "agent"))
         // An inherited value must never survive; it is replaced by this launcher's own entry so
@@ -193,6 +199,14 @@ describe("omo launcher", () => {
         expect(existsSync(environment.OMO_BIN ?? "")).toBe(true)
         expect((environment.OMO_BIN ?? "").replace(/\\/g, "/")).toMatch(/\/bin\/omo\.js$/)
         expect(environment.OMO_BIN).not.toBe(environment.SENPI_BIN)
+      })
+
+      test("#then scoped engine packages resolve the hoisted senpi shim", () => {
+        const fixture = createFixture({ scopedEngine: true })
+        const result = run(fixture, ["say", "hi"])
+        expect(result.status).toBe(0)
+        expect(capture(fixture).env.SENPI_BIN).toBe(fixture.shimPath)
+        expect(existsSync(capture(fixture).env.SENPI_BIN ?? "")).toBe(true)
       })
 
       test("#then SENPI_BIN stays absent when no shim exists", () => {
@@ -314,7 +328,7 @@ describe("omo launcher", () => {
           expect(captured.argv).toEqual([...args])
           expect(captured.argv).not.toContain("--extension")
           expect(existsSync(captured.env.SENPI_BIN ?? "")).toBe(true)
-          expect(captured.env.OMO_AGENT_TOOLKIT_BIN).toBe(join(fixture.packageRoot, "bin", "omo-agent-toolkit.js"))
+          expect(captured.env.OMO_AGENT_TOOLKIT_BIN ?? "").not.toContain(fixture.packageRoot)
           expect((captured.env.OMO_BIN ?? "").replace(/\\/g, "/")).toMatch(/\/bin\/omo\.js$/)
         })
       }
@@ -422,25 +436,12 @@ describe("omo launcher", () => {
     })
 
     describe("#when ulw-loop is requested", () => {
-      test("#then the staged runtime CLI receives the remaining arguments", () => {
+      test("#then it reports the CLI is unavailable instead of spawning a staged runtime", () => {
         const fixture = createFixture()
         const result = run(fixture, ["ulw-loop", "status", "--json"])
-        expect(result.status).toBe(0)
-        expect(capture(fixture)).toMatchObject({ argv: ["status", "--json"], target: "ulw-loop" })
-      })
-    })
 
-    describe("#when the committed agent-toolkit delegate is launched", () => {
-      test("#then the staged dispatcher receives all arguments", () => {
-        const fixture = createFixture()
-        const result = spawnSync(process.execPath, [
-          join(fixture.packageRoot, "bin", "omo-agent-toolkit.js"), "ulw-loop", "status",
-        ], {
-          encoding: "utf8",
-          env: { ...process.env, CAPTURE_FILE: fixture.captureFile },
-        })
-        expect(result.status).toBe(0)
-        expect(capture(fixture)).toMatchObject({ argv: ["ulw-loop", "status"], target: "agent-toolkit" })
+        expect(result.status).toBe(2)
+        expect(result.stderr).toContain("omo_agent_toolkit")
       })
     })
 

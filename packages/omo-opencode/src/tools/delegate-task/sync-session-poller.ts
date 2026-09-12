@@ -12,6 +12,7 @@ export { isSessionComplete } from "./sync-session-turns"
 const ACTIVE_SESSION_STATUSES = new Set(["busy", "retry", "running"])
 const ALL_BACKGROUND_TASKS_COMPLETE_MARKER = "[ALL BACKGROUND TASKS COMPLETE]"
 const CHILD_WAKE_GRACE_MS = 5_000
+const MAX_NON_ACTIVE_STATUS_STALENESS_POLLS = 10
 
 function wait(milliseconds: number): Promise<void> {
   const sharedBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
@@ -33,11 +34,23 @@ function isActiveSessionStatus(status: { type: string } | undefined): boolean {
   return status !== undefined && ACTIVE_SESSION_STATUSES.has(status.type)
 }
 
+function hasMessagesAfterAnchor(
+  messages: SessionMessage[],
+  anchorMessageID: string | undefined,
+  anchorMessageCount: number | undefined,
+): boolean {
+  if (anchorMessageID !== undefined) {
+    const anchorIndex = messages.findIndex((message) => message.info?.id === anchorMessageID)
+    return anchorIndex === -1 || anchorIndex < messages.length - 1
+  }
+  return anchorMessageCount === undefined || messages.length > anchorMessageCount
+}
+
 async function fetchSessionMessages(
   client: OpencodeClient,
   sessionID: string
 ): Promise<SessionMessage[]> {
-  const messagesResult = await client.session.messages({ path: { id: sessionID } })
+  const messagesResult = await client.session.messages({ path: { id: sessionID }, query: { limit: 100 } })
   const rawData = (messagesResult as { data?: unknown })?.data ?? messagesResult
   return Array.isArray(rawData) ? (rawData as SessionMessage[]) : []
 }
@@ -82,6 +95,7 @@ export async function pollSyncSession(
     toastManager: { removeTask: (id: string) => void } | null | undefined
     taskId: string | undefined
     anchorMessageCount?: number
+    anchorMessageID?: string
     maxAssistantTurns?: number
     hasActiveChildBackgroundTasks?: (sessionID: string) => boolean
     hasPendingParentWake?: (sessionID: string) => boolean
@@ -95,9 +109,14 @@ export async function pollSyncSession(
   const pollStart = Date.now()
   let inactiveStart = pollStart
   let pollCount = 0
+  let nonActivePollsSinceMessageFetch = 0
+  let lastStatusRevision: string | undefined
+  let hasFetchedNonActiveMessages = false
   let timedOut = false
   let assistantTurnCount = 0
   let lastSeenAssistantId: string | undefined
+  let lastObservedAssistantId: string | undefined
+  let lastObservedMessageCount: number | undefined
   const childSettleMs = input.childWakeGraceMs ?? CHILD_WAKE_GRACE_MS
   let childWaitAssistantId: string | undefined
   let childSettleStartedAt = 0
@@ -159,8 +178,11 @@ export async function pollSyncSession(
       }
 
       if (finalMessages) {
-        const hasNewMessages =
-          input.anchorMessageCount === undefined || finalMessages.length > input.anchorMessageCount
+        const hasNewMessages = hasMessagesAfterAnchor(
+          finalMessages,
+          input.anchorMessageID,
+          input.anchorMessageCount,
+        )
         if (hasNewMessages && isSessionComplete(finalMessages)) {
           log("[task] Abort detected after session already completed", { sessionID: input.sessionID })
           return null
@@ -176,11 +198,12 @@ export async function pollSyncSession(
     await wait(syncTiming.POLL_INTERVAL_MS)
     pollCount++
 
-    let sessionStatus: { type: string } | undefined
+    let sessionStatus: ({ type: string; updatedAt?: string | number; revision?: string | number; messageCount?: number } & Record<string, unknown>) | undefined
     try {
       const statusResult = await client.session.status()
       const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
-      sessionStatus = allStatuses[input.sessionID]
+      sessionStatus = allStatuses[input.sessionID] as typeof sessionStatus
+
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log("[task] Poll status fetch failed, checking messages", { sessionID: input.sessionID, error: errorMessage })
@@ -203,13 +226,22 @@ export async function pollSyncSession(
       return errorMessage
     }
 
-    const activeSessionStatus = isActiveSessionStatus(sessionStatus)
-    if (activeSessionStatus) {
-      inactiveStart = Date.now()
-      if (input.hasActiveChildBackgroundTasks === undefined && input.hasPendingParentWake === undefined) {
-        continue
-      }
+    const isActive = isActiveSessionStatus(sessionStatus)
+    const statusRevision = sessionStatus && (sessionStatus.updatedAt ?? sessionStatus.revision ?? sessionStatus.messageCount ?? sessionStatus.type)
+    const statusChanged = statusRevision !== undefined && String(statusRevision) !== lastStatusRevision
+    if (statusChanged) inactiveStart = Date.now()
+
+    // An active status (busy/retry/running) is not progress by itself: a child that hit a
+    // terminal provider error can sit in "busy" forever with an unchanged message set.
+    // Keep inspecting messages on the same staleness cadence so the error surfaces and the
+    // inactivity timer only resets on observable change.
+    nonActivePollsSinceMessageFetch++
+    if (hasFetchedNonActiveMessages && !statusChanged && childWaitAssistantId === undefined && nonActivePollsSinceMessageFetch < MAX_NON_ACTIVE_STATUS_STALENESS_POLLS) {
+      continue
     }
+    lastStatusRevision = statusRevision === undefined ? lastStatusRevision : String(statusRevision)
+    nonActivePollsSinceMessageFetch = 0
+    hasFetchedNonActiveMessages = true
 
     let messages: SessionMessage[]
     try {
@@ -220,9 +252,16 @@ export async function pollSyncSession(
       continue
     }
 
-    if (input.anchorMessageCount !== undefined && messages.length <= input.anchorMessageCount) {
-      continue
-    }
+    if (!hasMessagesAfterAnchor(messages, input.anchorMessageID, input.anchorMessageCount)) continue
+
+    const lastAssistant = getLastAssistant(messages)
+    const currentAssistantId = lastAssistant?.info?.id
+    const messageStateChanged =
+      lastObservedMessageCount !== undefined &&
+      (messages.length !== lastObservedMessageCount || currentAssistantId !== lastObservedAssistantId)
+    lastObservedMessageCount = messages.length
+    lastObservedAssistantId = currentAssistantId
+    if (messageStateChanged) inactiveStart = Date.now()
 
     const sessionError = getTerminalSessionError(messages)
     if (sessionError) {
@@ -242,12 +281,9 @@ export async function pollSyncSession(
       break
     }
 
-    if (activeSessionStatus) {
-      continue
-    }
-
-    if (isSessionComplete(messages)) {
-      const currentAssistantId = getLastAssistant(messages)?.info?.id
+    // Completion is only judged once the session has left its active status; a busy child
+    // whose last assistant turn merely looks finished is still working.
+    if (!isActive && isSessionComplete(messages)) {
       if (isAwaitingChildContinuation(currentAssistantId)) {
         continue
       }
@@ -255,8 +291,9 @@ export async function pollSyncSession(
       break
     }
 
-    // Count new assistant turns to circuit-break infinite loops
-    const lastAssistant = getLastAssistant(messages)
+    // Count new assistant turns to circuit-break infinite loops. This runs while the status
+    // is still active too: a child looping through tool calls never leaves "busy", and every
+    // new turn resets the inactivity timer above, so the turn budget is its only bound.
     if (lastAssistant?.info?.id && lastAssistant.info.id !== lastSeenAssistantId) {
       lastSeenAssistantId = lastAssistant.info.id
       assistantTurnCount++
@@ -271,6 +308,8 @@ export async function pollSyncSession(
         return `Task aborted: subagent exceeded ${maxTurns} assistant turns without completing. This usually indicates an infinite tool-call loop. Session ID: ${input.sessionID}`
       }
     }
+
+    if (isActive) continue
 
     const hasAssistantText = messages.some((m) => {
       if (m.info?.role !== "assistant") return false

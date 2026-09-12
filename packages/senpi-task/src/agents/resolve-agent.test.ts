@@ -249,10 +249,32 @@ describe("resolveAgent", () => {
     })
   })
 
+  test("#given curated tool rules #when resolved #then explicit denies become child exclusions while librarian keeps x_search", () => {
+    const explore = expectResolved(resolveAgent("explore", roster({
+      name: "explore",
+      tools: [
+        { pattern: "read", allow: true },
+        { pattern: "x_search", allow: false },
+      ],
+    }), undefined, { modelOverride: "openai/explicit" }))
+    const librarian = expectResolved(resolveAgent("librarian", roster({
+      name: "librarian",
+      tools: [
+        { pattern: "read", allow: true },
+        { pattern: "x_search", allow: true },
+      ],
+    }), undefined, { modelOverride: "openai/explicit" }))
+
+    expect(explore.toolAllowlist).toEqual(["read"])
+    expect(explore.toolDenylist).toEqual(["x_search"])
+    expect(librarian.toolAllowlist).toEqual(["read", "x_search"])
+    expect(librarian.toolDenylist).toBeUndefined()
+  })
+
   test("#given a model override without a registry #when resolved #then it returns persona fields and filters the tool allowlist", () => {
     // given
     const agents = roster({
-      name: "momus",
+      name: "plan-reviewer",
       prompt: "Advise only",
       executionMode: "in-process",
       allowedSubagents: ["explore"],
@@ -268,7 +290,7 @@ describe("resolveAgent", () => {
 
     // when
     const result = expectResolved(
-      resolveAgent("momus", agents, undefined, { modelOverride: "openai/explicit" }),
+      resolveAgent("plan-reviewer", agents, undefined, { modelOverride: "openai/explicit" }),
     )
 
     // then
@@ -279,5 +301,55 @@ describe("resolveAgent", () => {
     expect(result.agentExecutionMode).toBe("in-process")
     expect(result.allowedSubagents).toEqual(["explore"])
     expect(result.maxDepth).toBe(2)
+  })
+})
+
+describe("resolveAgent retired curated ids", () => {
+  test("#given a retired curated id #when resolved #then it is not_found and never lands on the canonical agent", () => {
+    // given
+    const agents = roster(
+      { name: "plan-reviewer", prompt: "Advise only" },
+      { name: "plan-consultant", prompt: "Consult only" },
+    )
+
+    // when
+    const momus = resolveAgent("momus", agents, undefined, { modelOverride: "openai/explicit" })
+    const metis = resolveAgent("metis", agents, undefined, { modelOverride: "openai/explicit" })
+
+    // then
+    expect(momus).toEqual({
+      kind: "not_found",
+      agent: "momus",
+      availableAgents: ["plan-consultant", "plan-reviewer"],
+    })
+    expect(metis).toEqual({
+      kind: "not_found",
+      agent: "metis",
+      availableAgents: ["plan-consultant", "plan-reviewer"],
+    })
+  })
+
+  test("#given the canonical id #when resolved #then the result names the canonical id", () => {
+    // given
+    const agents = roster({ name: "plan-reviewer", prompt: "Advise only" })
+
+    // when
+    const result = resolveAgent("plan-reviewer", agents, undefined, { modelOverride: "openai/explicit" })
+
+    // then
+    expect(result.kind).toBe("resolved")
+    if (result.kind !== "resolved") throw new Error("expected resolved")
+    expect(result.agent).toBe("plan-reviewer")
+  })
+
+  test("#given an unknown id #when resolved #then it stays unknown and untouched", () => {
+    // given
+    const agents = roster({ name: "plan-reviewer", prompt: "Advise only" })
+
+    // when
+    const result = resolveAgent("missing", agents, undefined, { modelOverride: "openai/explicit" })
+
+    // then
+    expect(result).toEqual({ kind: "not_found", agent: "missing", availableAgents: ["plan-reviewer"] })
   })
 })

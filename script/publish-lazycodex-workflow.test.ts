@@ -23,8 +23,6 @@ const lazycodexRuntimePayloadPaths = [
   "packages/omo-codex/plugin/components/bootstrap/dist/cli.js",
   "packages/omo-codex/plugin/components/bootstrap/scripts/bootstrap.ps1",
   "packages/omo-codex/plugin/components/bootstrap/scripts/node-dispatch.ps1",
-  "packages/omo-codex/plugin/components/codegraph/dist/cli.js",
-  "packages/omo-codex/plugin/components/codegraph/dist/serve.js",
   "packages/omo-codex/plugin/components/comment-checker/dist/cli.js",
   "packages/omo-codex/plugin/components/git-bash/dist/cli.js",
   "packages/omo-codex/plugin/components/lazycodex-executor-verify/dist/cli.js",
@@ -114,9 +112,11 @@ describe("LazyCodex publish workflow", () => {
       publishLazycodexStep.includes("if: inputs.publish_lazycodex == true && steps.check-lazycodex.outputs.skip != 'true'") &&
       publishLazycodexStep.includes("npm publish --ignore-scripts --access public --provenance --tag latest --loglevel verbose") &&
       !publishLazycodexStep.includes("continue-on-error: true")
-    const syncsLazycodexMarketplaceOnStableReleases = workflow.includes("name: Sync LazyCodex Codex marketplace") &&
-      syncMarketplaceStep.includes("if: needs.release-metadata.outputs.dist_tag == ''") &&
-      lazycodexReleaseStateStep.includes("if: needs.release-metadata.outputs.dist_tag == ''")
+    const syncsLazycodexMarketplaceOnEveryPublishingChannel = workflow.includes("name: Sync LazyCodex Codex marketplace") &&
+      syncMarketplaceStep.includes("if: inputs.publish_lazycodex == true") &&
+      lazycodexReleaseStateStep.includes("if: inputs.publish_lazycodex == true") &&
+      !syncMarketplaceStep.includes("dist_tag == ''") &&
+      !lazycodexReleaseStateStep.includes("dist_tag == ''")
     const tokenRequirementBeforePublish = workflow.indexOf("name: Require LazyCodex sync token") <
       workflow.indexOf("publish-main:")
     const requiresLazycodexSyncToken = workflow.includes("LAZYCODEX_SYNC_TOKEN: ${{ secrets.LAZYCODEX_SYNC_TOKEN }}") &&
@@ -140,10 +140,11 @@ describe("LazyCodex publish workflow", () => {
       lazycodexReleaseStateStep.includes("previous_lazycodex_version=${PREVIOUS_LAZYCODEX_VERSION}")
     const createsLazycodexReleaseOnlyWhenChanged =
       lazycodexReleaseStep.includes(
-        "if: needs.release-metadata.outputs.dist_tag == '' && steps.lazycodex-release-state.outputs.lazycodex_changed == 'true'",
+        "if: inputs.publish_lazycodex == true && steps.lazycodex-release-state.outputs.lazycodex_changed == 'true'",
       ) &&
       lazycodexReleaseStep.includes("GH_TOKEN: ${{ secrets.LAZYCODEX_SYNC_TOKEN }}") &&
-      lazycodexReleaseStep.includes('gh release create "v${VERSION}" --repo code-yeongyu/lazycodex') &&
+      lazycodexReleaseStep.includes('gh release create "v${VERSION}"') &&
+      lazycodexReleaseStep.includes("--repo code-yeongyu/lazycodex") &&
       lazycodexReleaseStep.includes("--notes-file /tmp/lazycodex-release-notes.md")
 
     // #then
@@ -163,8 +164,8 @@ describe("LazyCodex publish workflow", () => {
     expect(alwaysChecksLazycodexNpm, "release must always check lazycodex using the release version").toBe(true)
     expect(publishesLazycodexNpm, "lazycodex npm publish must be part of the normal release, tag stable releases as latest, and fail loudly").toBe(true)
     expect(
-      syncsLazycodexMarketplaceOnStableReleases,
-      "LazyCodex marketplace sync must run on every stable release (empty dist_tag)",
+      syncsLazycodexMarketplaceOnEveryPublishingChannel,
+      "LazyCodex marketplace sync must run on every channel that publishes lazycodex-ai, prereleases included",
     ).toBe(true)
     expect(requiresLazycodexSyncToken, "release must require a cross-repo token for LazyCodex push").toBe(true)
     expect(capturesPreviousLazycodexBeforePublishing, "release metadata must capture the previous lazycodex-ai version before publishing the new one").toBe(true)
@@ -314,8 +315,13 @@ describe("LazyCodex publish workflow", () => {
     const smokesReleaseVersion = smokeStep.includes('smoke_lazycodex_package "lazycodex-ai@${OMO_VERSION}"')
     const smokesStableLatestOnly = smokeStep.includes('if [ -z "$DIST_TAG" ]; then') &&
       smokeStep.includes('smoke_lazycodex_package "lazycodex-ai@latest"')
-    const retriesRegistryPropagation = smokeStep.includes("for attempt in $(seq 1 12)") &&
+    const retriesRegistryPropagation = smokeStep.includes('for attempt in $(seq 1 "$SMOKE_READINESS_ATTEMPTS")') &&
+      smokeStep.includes('sleep "$SMOKE_READINESS_INTERVAL_SECONDS"') &&
       smokeStep.includes("registry propagation")
+    const distinguishesVisibleInstallFailure =
+      smokeStep.includes('npm view "$package_spec" version --silent') &&
+      smokeStep.includes("install dry-run failed after") &&
+      smokeStep.includes("this is not registry propagation")
     const isolatesCodexState = smokeStep.includes('export HOME="$SMOKE_DIR/home"') &&
       smokeStep.includes('export CODEX_HOME="$SMOKE_DIR/codex"') &&
       smokeStep.includes('export CODEX_LOCAL_BIN_DIR="$SMOKE_DIR/bin"')
@@ -324,11 +330,15 @@ describe("LazyCodex publish workflow", () => {
       smokeStep.includes('expected_install_output="npx --yes oh-my-openagent@latest install --platform=codex --no-tui --codex-autonomous"') &&
       smokeStep.includes('expected_doctor_output_prefix="codex exec ') &&
       smokeStep.includes("npx --yes oh-my-openagent@latest install --platform=codex --no-tui --codex-autonomous") &&
-      smokeStep.includes('case "$npx_doctor_output" in "$expected_doctor_output_prefix"*) true ;; *) false ;; esac') &&
-      smokeStep.includes('case "$npx_doctor_output" in *"--sandbox danger-full-access"*) true ;; *) false ;; esac') &&
       smokeStep.includes('expected_doctor_hint="Use \\$omo:lcx-doctor"') &&
-      smokeStep.includes('case "$npx_doctor_output" in *"$expected_doctor_hint"*) true ;; *) false ;; esac') &&
-      smokeStep.includes('case "$npx_doctor_output" in *"--model"*|*"gpt-5.5-codex-mini"*) false ;; *) true ;; esac') &&
+      smokeStep.includes("doctor_prefix_ok=false") &&
+      smokeStep.includes("doctor_sandbox_ok=false") &&
+      smokeStep.includes("doctor_hint_ok=false") &&
+      smokeStep.includes("doctor_model_ok=true") &&
+      smokeStep.includes('[ "$doctor_prefix_ok" != true ]') &&
+      smokeStep.includes('[ "$doctor_sandbox_ok" != true ]') &&
+      smokeStep.includes('[ "$doctor_hint_ok" != true ]') &&
+      smokeStep.includes('[ "$doctor_model_ok" != true ]') &&
       !smokeStep.includes("npx --yes --package oh-my-openagent omo install") &&
       !smokeStep.includes("--platform=claude-code") &&
       !smokeStep.includes("--platform=gemini")
@@ -336,11 +346,12 @@ describe("LazyCodex publish workflow", () => {
       smokeStep.includes('npx -y "$package_spec" install --no-tui --codex-autonomous') &&
       smokeStep.includes('[ -x "$CODEX_LOCAL_BIN_DIR/omo-agent-toolkit" ]') &&
       smokeStep.includes('omo_agent_toolkit_version_output=$("$CODEX_LOCAL_BIN_DIR/omo-agent-toolkit" --version 2>&1)') &&
-      smokeStep.includes('[ "$omo_agent_toolkit_version_output" = "$OMO_VERSION" ]') &&
+      smokeStep.includes('[ "$omo_agent_toolkit_version_output" != "$OMO_VERSION" ]') &&
       smokeStep.includes('ulw_loop_output=$("$CODEX_LOCAL_BIN_DIR/omo-agent-toolkit" ulw-loop --help 2>&1)') &&
       smokeStep.includes('printf "%s" "$ulw_loop_output" | grep -q "ulw-loop"')
     const assertsLegacyOmoBinIsRemoved =
-      smokeStep.includes('[ ! -e "$CODEX_LOCAL_BIN_DIR/omo" ]') &&
+      smokeStep.includes('[ -e "$CODEX_LOCAL_BIN_DIR/omo" ]') &&
+      smokeStep.includes("runtime verification failed") &&
       !smokeStep.includes('[ -x "$CODEX_LOCAL_BIN_DIR/omo" ]') &&
       !smokeStep.includes('"$CODEX_LOCAL_BIN_DIR/omo" --version') &&
       !smokeStep.includes('"$CODEX_LOCAL_BIN_DIR/omo" ulw-loop --help')
@@ -359,6 +370,10 @@ describe("LazyCodex publish workflow", () => {
     expect(smokesReleaseVersion, "post-publish smoke must verify the exact release version").toBe(true)
     expect(smokesStableLatestOnly, "post-publish smoke must verify latest only for stable releases").toBe(true)
     expect(retriesRegistryPropagation, "post-publish smoke must tolerate npm registry propagation").toBe(true)
+    expect(
+      distinguishesVisibleInstallFailure,
+      "post-publish smoke must stop and report install failures once the package is registry-visible",
+    ).toBe(true)
     expect(isolatesCodexState, "post-publish smoke must isolate HOME and Codex paths").toBe(true)
     expect(assertsDryRunRouting, "post-publish smoke must assert the expected dry-run routing output").toBe(true)
     expect(

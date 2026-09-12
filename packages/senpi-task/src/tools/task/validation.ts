@@ -1,3 +1,4 @@
+
 import type { ResolvedSpawnItem } from "./types"
 
 export type TaskTargetErrorCode = "both_targets" | "no_target" | "category_with_model"
@@ -26,6 +27,7 @@ type SpawnItemInput = TargetInput & {
   readonly name?: string
   readonly model?: string
   readonly load_skills?: readonly string[]
+  readonly run_in_background?: boolean
 }
 
 type SpawnParamsInput = TargetInput & {
@@ -60,19 +62,31 @@ export type ResolveSpawnItemsResult =
   | { readonly kind: "ok"; readonly items: readonly ResolvedSpawnItem[] }
   | { readonly kind: "error"; readonly error: BatchShapeError | SpawnItemTargetError }
 
+export type RunInBackgroundConflictError = {
+  readonly code: "run_in_background_conflict"
+  readonly message: string
+}
+
+export type RunInBackgroundResolution =
+  | { readonly kind: "ok"; readonly runInBackground: boolean | undefined }
+  | { readonly kind: "error"; readonly error: RunInBackgroundConflictError }
+
 const BOTH_TARGETS_MESSAGE = "Provide EITHER category OR subagent_type, not both. Remove one and retry."
 
 const CATEGORY_WITH_MODEL_MESSAGE =
   "Provide EITHER category OR model, never both. A category-routed task always takes its model from the omo.json category config; a call-site model override would silently bypass that routing. Remove model and retry, or use subagent_type for an explicit-model spawn, or configure categories.<name>.models in omo.json."
 
 const NO_TARGET_MESSAGE =
-  'You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category="quick", prompt="...") or task(subagent_type="momus", prompt="...").'
+  'You MUST provide EITHER category OR subagent_type. Omitting BOTH will FAIL. Example: task(category="quick", prompt="...") or task(subagent_type="plan-reviewer", prompt="...").'
 
 const PROMPT_AND_TASKS_MESSAGE = "Provide EITHER prompt OR tasks, not both. Remove one and retry."
 
 const NO_PROMPT_OR_TASKS_MESSAGE = "Provide EITHER prompt OR tasks. One field is required."
 
 const EMPTY_TASKS_MESSAGE = "tasks must contain at least one item."
+
+const RUN_IN_BACKGROUND_CONFLICT_MESSAGE =
+  "run_in_background is batch-wide: every value in one task call must agree. Set it once at the top level (true returns every task id immediately; false waits for every result) and drop the disagreeing item-level values."
 
 function present(value: string | undefined): value is string {
   return value !== undefined && value.trim().length > 0
@@ -111,6 +125,29 @@ export function validateBatchShape(params: SpawnParamsInput): BatchShapeResult {
     return { kind: "error", error: { code: "empty_tasks", message: EMPTY_TASKS_MESSAGE } }
   }
   return hasTasks ? { kind: "batch" } : { kind: "single" }
+}
+
+// One task call runs either entirely in the background or entirely in the foreground: an item-level
+// flag is a mirror of the batch setting, never a per-item override. Agreement is hoisted so a batch
+// whose items all say true is honored; disagreement is a typed error instead of a silent drop.
+export function resolveRunInBackground(params: SpawnParamsInput): RunInBackgroundResolution {
+  const seen: string[] = []
+  const values = new Set<boolean>()
+  const note = (label: string, value: boolean | undefined): void => {
+    if (value === undefined) return
+    seen.push(`${label}=${value}`)
+    values.add(value)
+  }
+  note("top-level", params.run_in_background)
+  for (const [index, item] of (params.tasks ?? []).entries()) note(`tasks[${index}]`, item.run_in_background)
+  if (values.size > 1) {
+    return {
+      kind: "error",
+      error: { code: "run_in_background_conflict", message: `${RUN_IN_BACKGROUND_CONFLICT_MESSAGE} Seen: ${seen.join(", ")}.` },
+    }
+  }
+  const [runInBackground] = values
+  return { kind: "ok", runInBackground }
 }
 
 export function resolveSpawnItems(params: SpawnParamsInput): ResolveSpawnItemsResult {

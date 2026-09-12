@@ -86,14 +86,36 @@ describe("omo-ai publish workflow shape", () => {
     expect(versionRun).toContain('DIST_TAG=$(printf \'%s\' "$VERSION" | cut -d\'-\' -f2 | cut -d\'.\' -f1)')
   })
 
-  test("marks GitHub releases as prereleases exactly when the version has a prerelease suffix", () => {
-    // given
-    const releaseRun = namedStep("release", "Create GitHub release").run ?? ""
+  test("decides the Latest badge from the highest published semver, never from a pre-release flag", () => {
+    // given: `releases/latest` is what the compiled binary's update hint downloads from, so the
+    // badge must follow the highest published version rather than whichever release was created
+    // last. `gh release create --latest` alone would hand it to an older-line hotfix.
+    const steps = ["Create GitHub release", "Create LazyCodex GitHub release"]
+      .map((name) => namedStep("release", name).run ?? "")
 
-    // when / then
-    expect(releaseRun).toContain('if [[ "$VERSION" == *"-"* ]]; then')
-    expect(releaseRun).toContain("RELEASE_FLAGS+=(--prerelease)")
-    expect(releaseRun).toContain('gh release create "v${VERSION}" "${RELEASE_FLAGS[@]}"')
+    // when
+    const releaseCommands = steps.flatMap((run) =>
+      run.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("gh release create ")),
+    )
+
+    // then
+    expect(releaseCommands).toHaveLength(2)
+    for (const command of releaseCommands) {
+      expect(command).toContain('"$LATEST_FLAG"')
+      expect(command).not.toContain("--prerelease")
+      expect(command).not.toContain("--latest ")
+    }
+    for (const run of steps) {
+      const resolveLine = run
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("LATEST_FLAG="))
+      expect(resolveLine).toBeDefined()
+      expect(resolveLine).toContain("gh release list")
+      expect(resolveLine).toContain("--exclude-drafts")
+      expect(resolveLine).toContain('bun script/release-latest-flag.ts "$VERSION"')
+      expect(run).toContain("set -euo pipefail")
+    }
   })
 
   test("maps every root release to a unique ordered prerelease", () => {
@@ -117,7 +139,7 @@ describe("omo-ai publish workflow shape", () => {
 
   test("checks out before asserting root bin ownership", () => {
     const metadataSteps = steps("release-metadata")
-    const checkoutIndex = metadataSteps.findIndex((step) => step.uses === "actions/checkout@v5")
+    const checkoutIndex = metadataSteps.findIndex((step) => step.uses === "actions/checkout@v7")
     const assertionIndex = metadataSteps.findIndex((step) => step.name === "Assert omo bin ownership")
     const assertionRun = metadataSteps[assertionIndex]?.run ?? ""
 
@@ -136,7 +158,7 @@ describe("omo-ai publish workflow shape", () => {
     expect(update.env?.OMO_AI_VERSION).toBe("${{ needs.release-metadata.outputs.omo_ai_version }}")
     expect(prepare.run).toContain(stampLine)
     expect(update.run).toContain(stampLine)
-    expect(prepare.run).toContain("git add package.json packages/omo-native/package.json ")
+    expect(prepare.run).toContain("git add CHANGELOG.md package.json packages/omo-native/package.json ")
   })
 
   test("builds and verifies the payload before stripping token auth", () => {
@@ -163,8 +185,8 @@ describe("omo-ai publish workflow shape", () => {
     expect(publishIndex).toBeGreaterThan(originalStripIndex)
     expect(publishIndex).toBeGreaterThan(lastWrapperPublishIndex)
     expect(dedicatedStripIndex).toBe(publishIndex - 1)
-    expect(dedicatedStrip.if).toBe("needs.release-metadata.outputs.already_published != 'true'")
-    expect(publish.if).toBe("needs.release-metadata.outputs.already_published != 'true'")
+    expect(dedicatedStrip.if).toBe("needs.release-metadata.outputs.already_published != 'true' && inputs.lazycodex_only != true")
+    expect(publish.if).toBe("needs.release-metadata.outputs.already_published != 'true' && inputs.lazycodex_only != true")
     expect(publish["working-directory"]).toBe("packages/omo-native")
     expect(publish.run).toContain("npm publish --ignore-scripts --access public --provenance --tag beta")
     expect(publish.run, "omo-ai publish must hardcode --tag beta rather than DIST_TAG").not.toContain("$DIST_TAG")
@@ -174,10 +196,11 @@ describe("omo-ai publish workflow shape", () => {
   test("always runs readiness, dist-tag guard, and live verification", () => {
     // These probes moved out of publish-main into post-publish-verify: they assert registry state that is
     // already public once publish-main succeeds, so gating the release job on them could only strand a
-    // published release. They stay unconditional inside their new job.
+    // published release. Inside their new job the only gate is the LazyCodex-only mode, which
+    // publishes no omo-ai at all.
     for (const name of ["Wait for omo-ai registry readiness", "Guard omo-ai dist-tags", "Verify omo-ai live install"]) {
       const step = namedStep("post-publish-verify", name)
-      expect(step).not.toHaveProperty("if")
+      expect(step.if).toBe("inputs.lazycodex_only != true")
       expect(step.env?.OMO_AI_VERSION).toBe("${{ needs.release-metadata.outputs.omo_ai_version }}")
       expect(step.env?.ALREADY_PUBLISHED).toBe("${{ needs.release-metadata.outputs.already_published }}")
     }
