@@ -42,6 +42,14 @@ export function getErrorText(error: unknown): string {
 }
 
 export function extractErrorName(error: unknown): string | undefined {
+  if (isRecord(error)) {
+    const name = error["name"]
+    if (typeof name === "string" && name !== "Error") return name
+    const cause = error["cause"]
+    for (const candidate of [error["error"], isRecord(cause) ? cause["body"] : undefined]) {
+      if (isRecord(candidate) && typeof candidate["name"] === "string") return candidate["name"]
+    }
+  }
   if (isRecord(error) && typeof error["name"] === "string") return error["name"]
   if (error instanceof Error) return error.name
   return undefined
@@ -97,13 +105,14 @@ export function extractErrorStatusCode(error: unknown): number | undefined {
     if (parsed >= 100 && parsed < 600) return parsed
   }
 
-  const responseRaw = (error as Record<string, unknown>)["response"]
-  if (isRecord(responseRaw)) {
-    const respStatus = responseRaw["status"]
-    if (typeof respStatus === "number" && respStatus >= 100 && respStatus < 600) return respStatus
-    if (typeof respStatus === "string") {
-      const parsed = parseInt(respStatus, 10)
-      if (parsed >= 100 && parsed < 600) return parsed
+  for (const responseRaw of [error["response"], error["cause"]]) {
+    if (isRecord(responseRaw)) {
+      const respStatus = responseRaw["status"]
+      if (typeof respStatus === "number" && respStatus >= 100 && respStatus < 600) return respStatus
+      if (typeof respStatus === "string") {
+        const parsed = parseInt(respStatus, 10)
+        if (parsed >= 100 && parsed < 600) return parsed
+      }
     }
   }
 

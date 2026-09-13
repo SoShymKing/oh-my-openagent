@@ -13,6 +13,7 @@ import { isPlanFamily } from "./constants"
 import { formatDetailedError } from "./error-formatting"
 import { buildTaskPrompt } from "./prompt-builder"
 import type { DelegatedModelConfig, DelegateTaskArgs, OpencodeClient } from "./types"
+import { getSessionNotFoundError } from "./session-not-found-error"
 
 type SendSyncPromptDeps = {
   promptWithModelSuggestionRetry: typeof promptWithModelSuggestionRetry
@@ -127,13 +128,15 @@ export async function sendSyncPrompt(
       checkToolState: false,
     })
   } catch (promptError) {
-    if (isOracleAgent(input.agentToUse) && isUnexpectedEofError(promptError)) {
+    const missingSession = getSessionNotFoundError(promptError, input.sessionID)
+    if (!missingSession && isOracleAgent(input.agentToUse) && isUnexpectedEofError(promptError)) {
       return null
     }
 
     if (input.toastManager && input.taskId !== undefined) {
       input.toastManager.removeTask(input.taskId)
     }
+    if (missingSession) return missingSession.message
     const errorMessage = promptError instanceof Error ? promptError.message : String(promptError)
     if (errorMessage.includes("agent.name") || errorMessage.includes("undefined")) {
       return formatDetailedError(new Error(`Agent "${input.agentToUse}" not found. Make sure the agent is registered in your opencode.json or provided by a plugin.`), {

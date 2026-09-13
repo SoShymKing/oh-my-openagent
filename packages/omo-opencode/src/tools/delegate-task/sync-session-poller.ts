@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-opencode/utils"
 import type { ToolContextWithMetadata, OpencodeClient } from "./types"
 import type { SessionMessage } from "./executor-types"
 import { getDefaultSyncPollTimeoutMs, getTimingConfig } from "./timing"
@@ -6,6 +7,7 @@ import { log } from "../../shared/logger"
 import { isTerminalNoReplyUserMessage, normalizeSDKResponse } from "../../shared"
 import { consumeSyncSessionError } from "../../shared/sync-session-error-store"
 import { extractErrorMessage } from "../../features/background-agent/error-classifier"
+import { getSessionNotFoundError } from "./session-not-found-error"
 
 export { isSessionComplete } from "./sync-session-turns"
 
@@ -51,6 +53,9 @@ async function fetchSessionMessages(
   sessionID: string
 ): Promise<SessionMessage[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionID }, query: { limit: 100 } })
+  const missingSession = getSessionNotFoundError(messagesResult, sessionID)
+  if (missingSession) throw missingSession
+  if (isRecord(messagesResult) && messagesResult.error != null) throw messagesResult.error
   const rawData = (messagesResult as { data?: unknown })?.data ?? messagesResult
   return Array.isArray(rawData) ? (rawData as SessionMessage[]) : []
 }
@@ -164,6 +169,11 @@ export async function pollSyncSession(
           finalMessages = await fetchSessionMessages(client, input.sessionID)
           break
         } catch (error) {
+          const missingSession = getSessionNotFoundError(error, input.sessionID)
+          if (missingSession) {
+            if (input.toastManager && input.taskId) input.toastManager.removeTask(input.taskId)
+            return missingSession.message
+          }
           const errorMessage = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
           log("[task] Final messages fetch failed after abort, retrying", {
             sessionID: input.sessionID,
@@ -247,6 +257,11 @@ export async function pollSyncSession(
     try {
       messages = await fetchSessionMessages(client, input.sessionID)
     } catch (error) {
+      const missingSession = getSessionNotFoundError(error, input.sessionID)
+      if (missingSession) {
+        if (input.toastManager && input.taskId) input.toastManager.removeTask(input.taskId)
+        return missingSession.message
+      }
       const errorMessage = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
       log("[task] Poll messages fetch failed, retrying", { sessionID: input.sessionID, error: errorMessage })
       continue
