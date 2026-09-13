@@ -1,4 +1,5 @@
 import { log } from "../logger"
+import { isRecord } from "../record-type-guard"
 import { isSessionActive, settleAfterSessionIdle } from "../session-idle-settle"
 import { sessionLatestAssistantBlocksInternalPrompt } from "./pending-tool-turn"
 import { rememberRecentPromptDispatch } from "./recent-dispatches"
@@ -138,6 +139,9 @@ export async function dispatchAfterSessionIdle<TInput>(args: {
       dispatchTimeoutMs,
       `[prompt-async-gate] ${sessionName} dispatch`,
     )
+    if (isRecord(response) && response.error !== undefined && response.error !== null) {
+      throw response
+    }
     rememberRecentPromptDispatch({
       sessionID,
       dedupeKey,

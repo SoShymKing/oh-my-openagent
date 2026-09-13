@@ -10,6 +10,7 @@ import { shouldAttemptPollErrorRecovery } from "./sync-poll-error-recovery"
 import type { SyncTaskDeps } from "./sync-task-deps"
 import { getNextSyncFallbackModel, retrySyncPromptWithFallbacks } from "./sync-task-fallback"
 import type { DelegatedModelConfig, DelegateTaskArgs, ToolContextWithMetadata } from "./types"
+import { isSessionNotFoundPollError } from "./session-not-found-error"
 
 type SyncTaskRunnerInput = {
   readonly args: DelegateTaskArgs
@@ -114,6 +115,7 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
       categoryModel: effectiveCategoryModel,
     })
     if (promptError) {
+      if (isSessionNotFoundPollError(promptError)) return promptError
       const promptResult = await retrySyncPromptWithFallbacks({
         sessionID: activeSessionID,
         initialError: promptError,
@@ -152,6 +154,7 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
       hasPendingParentWake,
     }, syncPollTimeoutMs)
     if (pollError) {
+      if (isSessionNotFoundPollError(pollError)) return pollError
       if (shouldAttemptPollErrorRecovery(pollError)) {
         const recoveredResult = await deps.fetchSyncResult(client, activeSessionID, undefined, {
           strictAbortRecovery: true,

@@ -1,3 +1,4 @@
+import { isRecord } from "@oh-my-opencode/utils"
 import type { DelegateTaskArgs, ToolContextWithMetadata } from "./types"
 import type { ExecutorContext, ParentContext, SessionMessage } from "./executor-types"
 import { getDeliverableTag, isPlanFamily } from "./constants"
@@ -17,6 +18,7 @@ import { getTaskID } from "./task-id"
 import { resolveMetadataModel } from "./resolve-metadata-model"
 import { log } from "../../shared/logger"
 import { cancelSyncSessionDeletion, scheduleSyncSessionDeletion } from "./sync-session-cleanup"
+import { getSessionNotFoundError, isSessionNotFoundPollError } from "./session-not-found-error"
 
 type ResumeModel = { providerID: string; modelID: string }
 
@@ -58,27 +60,12 @@ async function resolveResumeContext(
   client: ExecutorContext["client"],
   continuationID: string
 ): Promise<ResumeContext> {
+  let messagesResp: unknown
   try {
-    const messagesResp = await client.session.messages({ path: { id: continuationID } })
-    const messages = normalizeSDKResponse(messagesResp, [] as SessionMessage[])
-
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const info = messages[index].info
-      if (info?.agent || info?.model || (info?.modelID && info?.providerID)) {
-        return {
-          resumeAgent: info.agent,
-          resumeModel: info.model ?? (info.providerID && info.modelID
-            ? { providerID: info.providerID, modelID: info.modelID }
-            : undefined),
-          resumeVariant: info.variant,
-          anchorMessageCount: messages.length,
-          anchorMessageID: messages.at(-1)?.info?.id,
-        }
-      }
-    }
-
-    return { anchorMessageCount: messages.length, anchorMessageID: messages.at(-1)?.info?.id }
+    messagesResp = await client.session.messages({ path: { id: continuationID } })
   } catch (error) {
+    const missingSession = getSessionNotFoundError(error, continuationID)
+    if (missingSession) throw missingSession
     if (!(error instanceof Error)) throw error
     const resumeMessageDir = getMessageDir(continuationID)
     const { prevMessage } = await resolveMessageContext(continuationID, client, resumeMessageDir)
@@ -92,6 +79,27 @@ async function resolveResumeContext(
       resumeVariant: resumeMessageModel?.variant,
     }
   }
+  const missingSession = getSessionNotFoundError(messagesResp, continuationID)
+  if (missingSession) throw missingSession
+  if (isRecord(messagesResp) && messagesResp.error != null) throw messagesResp.error
+  const messages = normalizeSDKResponse(messagesResp, [] as SessionMessage[])
+
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const info = messages[index].info
+    if (info?.agent || info?.model || (info?.modelID && info?.providerID)) {
+      return {
+        resumeAgent: info.agent,
+        resumeModel: info.model ?? (info.providerID && info.modelID
+          ? { providerID: info.providerID, modelID: info.modelID }
+          : undefined),
+        resumeVariant: info.variant,
+        anchorMessageCount: messages.length,
+        anchorMessageID: messages.at(-1)?.info?.id,
+      }
+    }
+  }
+
+  return { anchorMessageCount: messages.length, anchorMessageID: messages.at(-1)?.info?.id }
 }
 
 export async function executeSyncContinuation(
@@ -189,7 +197,8 @@ export async function executeSyncContinuation(
      if (toastManager) {
        toastManager.removeTask(taskId)
      }
-     const errorMessage = promptError instanceof Error ? promptError.message : String(promptError)
+     const errorMessage = getSessionNotFoundError(promptError, continuationID)?.message
+       ?? (promptError instanceof Error ? promptError.message : String(promptError))
      detachFromManager?.()
      scheduleSyncSessionDeletion(client, continuationID)
      return `Failed to send continuation prompt: ${errorMessage}\n\nTask ID: ${continuationID}`
@@ -204,6 +213,7 @@ export async function executeSyncContinuation(
         anchorMessageCount,
         anchorMessageID,
       }, syncPollTimeoutMs)
+      if (pollError && isSessionNotFoundPollError(pollError)) return pollError
       if (pollError && shouldAttemptPollErrorRecovery(pollError)) {
         if (anchorMessageCount === undefined) {
           return pollError

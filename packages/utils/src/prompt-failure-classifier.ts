@@ -1,3 +1,5 @@
+import { isRecord } from "./record-type-guard"
+
 export function extractPromptFailureMessage(error: unknown): string {
   if (typeof error === "string") return error
   if (error instanceof Error) return error.message
@@ -14,6 +16,10 @@ export function extractPromptFailureMessage(error: unknown): string {
 }
 
 export function isAmbiguousPromptDispatchFailure(error: unknown): boolean {
+  if (isRecord(error) && (
+    (isRecord(error.response) && error.response.status === 404)
+    || (isRecord(error.cause) && error.cause.status === 404)
+  )) return false
   const message = extractPromptFailureMessage(error).toLowerCase()
   return (
     message.includes("unexpected eof")
