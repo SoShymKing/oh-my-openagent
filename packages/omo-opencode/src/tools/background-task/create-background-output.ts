@@ -1,13 +1,14 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import type { BackgroundTask } from "../../features/background-agent"
+import { sessionOperationLeases } from "../../features/background-agent/session-retention"
 import { publishToolMetadata } from "../../features/tool-metadata-store"
 import { log } from "../../shared/logger"
 import type { BackgroundOutputArgs } from "./types"
 import type { BackgroundOutputClient, BackgroundOutputManager } from "./clients"
 import { BACKGROUND_OUTPUT_DESCRIPTION } from "./constants"
 import { delay } from "./delay"
-import { formatFullSession } from "./full-session-format"
-import { formatTaskResult } from "./task-result-format"
+import { formatFullSessionWithHandoffStatus } from "./full-session-format"
+import { formatTaskResultWithHandoffStatus } from "./task-result-format"
 import { formatTaskStatus } from "./task-status-format"
 
 import { getAgentDisplayName } from "../../shared/agent-display-names"
@@ -33,6 +34,14 @@ function formatResolvedTitle(task: BackgroundTask): string {
 
 function isTaskActiveStatus(status: BackgroundTask["status"]): boolean {
   return status === "pending" || status === "running"
+}
+
+async function confirmTerminalOutputHandoff(
+  manager: BackgroundOutputManager,
+  task: BackgroundTask,
+): Promise<void> {
+  if (!task.sessionId || isTaskActiveStatus(task.status)) return
+  await manager.confirmBackgroundOutputHandoff?.(task.sessionId)
 }
 
 function appendTimeoutNote(output: string, timeoutMs: number): string {
@@ -113,11 +122,15 @@ export function createBackgroundOutput(manager: BackgroundOutputManager, client:
       from_end: tool.schema.boolean().optional().describe("Read messages from the END of the session (default: false). Pass true to get the most-recent / final assistant message in the output. Recommended when you want the result of a completed task."),
     },
     async execute(args: BackgroundOutputArgs, toolContext) {
+      let releaseSessionLease: (() => void) | undefined
       try {
         const ctx = toolContext as ToolContextWithMetadata
         const task = await getTaskWithMissingRetry(manager, args.task_id)
         if (!task) {
           return formatTaskNotFoundMessage(args.task_id)
+        }
+        if (task.sessionId) {
+          releaseSessionLease = sessionOperationLeases.acquire(task.sessionId)
         }
 
         const meta = {
@@ -175,7 +188,7 @@ export function createBackgroundOutput(manager: BackgroundOutputManager, client:
         const includeToolResults = isActive || (args.include_tool_results ?? false)
 
         if (fullSession) {
-          const output = await formatFullSession(resolvedTask, client, {
+          const { output, handoffEligible } = await formatFullSessionWithHandoffStatus(resolvedTask, client, {
             includeThinking,
             messageLimit: args.message_limit,
             sinceMessageId: args.since_message_id,
@@ -184,22 +197,29 @@ export function createBackgroundOutput(manager: BackgroundOutputManager, client:
             fromEnd: args.from_end,
           })
 
+          if (handoffEligible) await confirmTerminalOutputHandoff(manager, resolvedTask)
           return didTimeoutWhileActive ? appendTimeoutNote(output, timeoutMs) : output
         }
 
         if (resolvedTask.status === "completed") {
           recordBackgroundOutputConsumption(ctx.sessionID, ctx.messageID, resolvedTask.sessionId)
-          return await formatTaskResult(resolvedTask, client)
+          const { output, handoffEligible } = await formatTaskResultWithHandoffStatus(resolvedTask, client)
+          if (handoffEligible) await confirmTerminalOutputHandoff(manager, resolvedTask)
+          return output
         }
 
         if (resolvedTask.status === "error" || resolvedTask.status === "cancelled" || resolvedTask.status === "interrupt") {
-          return formatTaskStatus(resolvedTask)
+          const output = formatTaskStatus(resolvedTask)
+          await confirmTerminalOutputHandoff(manager, resolvedTask)
+          return output
         }
 
         const statusOutput = formatTaskStatus(resolvedTask)
         return didTimeoutWhileActive ? appendTimeoutNote(statusOutput, timeoutMs) : statusOutput
       } catch (error) {
         return `Error getting output: ${error instanceof Error ? error.message : String(error)}`
+      } finally {
+        releaseSessionLease?.()
       }
     },
   })
