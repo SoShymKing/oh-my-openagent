@@ -1,4 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test"
+import {
+  SESSION_RETENTION_METADATA_KEY,
+  type SessionRetentionCheckpoint,
+} from "../../features/background-agent/session-retention"
+import {
+  releaseAllPromptAsyncReservationsForTesting,
+  releasePromptAsyncReservation,
+} from "../../shared/prompt-async-gate"
 
 function clearRequireCache(modulePath: string): void {
   const resolvedPath = require.resolve(modulePath)
@@ -32,6 +40,7 @@ describe("executeSyncTask - cleanup on error paths", () => {
     addCalls = []
     const { clearAllDelegatedChildSessionBootstrap } = require("../../shared/delegated-child-session-bootstrap")
     clearAllDelegatedChildSessionBootstrap()
+    releaseAllPromptAsyncReservationsForTesting()
 
     clearRequireCache("./sync-task")
 
@@ -1178,6 +1187,84 @@ describe("executeSyncTask - cleanup on error paths", () => {
       throw new Error("Expected metadata call with spawnDepth")
     }
     expect(taskMeta.metadata.spawnDepth).toBe(3) // NOT 1 (the fallback value)
+  })
+
+  test("records active and terminal handoff checkpoints for a completed sync task", async () => {
+    const sessionID = "ses_retention_sync"
+    const promptAsyncCalls: Array<{
+      body: { parts?: Array<{ metadata?: Record<string, unknown> }> }
+    }> = []
+    const abort = mock(async () => ({}))
+    const mockClient = {
+      session: {
+        abort,
+        promptAsync: async (input: { body: { parts?: Array<{ metadata?: Record<string, unknown> }> } }) => {
+          promptAsyncCalls.push(input)
+          return { data: undefined }
+        },
+      },
+    }
+    const { executeSyncTask } = require("./sync-task")
+    const deps = {
+      createSyncSession: async () => ({ ok: true as const, sessionID, parentDirectory: "/tmp" }),
+      sendSyncPrompt: async () => null,
+      pollSyncSession: async () => {
+        releasePromptAsyncReservation(sessionID, "sync-task-test", {
+          reservedBy: "session-retention-checkpoint",
+        })
+        return null
+      },
+      fetchSyncResult: async () => ({ ok: true as const, textContent: "Result" }),
+    }
+    const categoryModel = { providerID: "provider", modelID: "model", variant: "high" }
+
+    const result = await executeSyncTask(
+      {
+        prompt: "test prompt",
+        description: "retention task",
+        category: "deep",
+        load_skills: [],
+        run_in_background: false,
+      },
+      { sessionID: "parent-session", messageID: "parent-message", metadata: () => {} },
+      {
+        client: mockClient,
+        directory: "/tmp",
+        autoDeleteSubagentSessions: false,
+      },
+      { sessionID: "parent-session", messageID: "parent-message" },
+      "test-agent",
+      categoryModel,
+      undefined,
+      undefined,
+      undefined,
+      deps,
+    )
+
+    const checkpoints = promptAsyncCalls.flatMap((call) => call.body.parts ?? [])
+      .map((part) => part.metadata?.[SESSION_RETENTION_METADATA_KEY])
+      .filter((checkpoint): checkpoint is SessionRetentionCheckpoint => checkpoint !== undefined)
+    expect(result).toContain("Task completed in")
+    expect(checkpoints).toHaveLength(2)
+    expect(checkpoints[0]).toEqual({
+      version: 1,
+      mode: "sync",
+      sessionID,
+      taskID: "sync_ses_rete",
+      parentSessionID: "parent-session",
+      parentMessageID: "parent-message",
+      agent: "test-agent",
+      model: categoryModel,
+      category: "deep",
+      autoDelete: false,
+    })
+    expect(checkpoints[1]).toMatchObject({
+      terminalStatus: "completed",
+      autoDelete: false,
+    })
+    expect(checkpoints[1]?.terminalAt).toBeNumber()
+    expect(checkpoints[1]?.handoffConfirmedAt).toBe(checkpoints[1]?.terminalAt)
+    expect(abort).toHaveBeenCalledTimes(1)
   })
 })
 

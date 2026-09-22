@@ -29,13 +29,17 @@ type SyncTaskRunnerInput = {
   readonly systemContent: string | undefined
   readonly toastManager: TaskToastManager | undefined
   readonly modelInfo: ModelFallbackInfo | undefined
-  readonly registerSyncSession: (newSessionID: string) => Promise<void>
+  readonly registerSyncSession: (
+    newSessionID: string,
+    currentModel: DelegatedModelConfig | undefined,
+  ) => Promise<void>
   readonly publishSyncMetadata: (
     currentSessionID: string,
     currentModel: DelegatedModelConfig | undefined,
     spawnDepth: number,
   ) => Promise<void>
-  readonly cleanupRetrySession: (currentSessionID: string) => void
+  readonly cleanupRetrySession: (currentSessionID: string) => Promise<void>
+  readonly persistSyncSessionRetentionCheckpoint: (currentSessionID: string) => Promise<void>
   readonly setSyncSessionID: (currentSessionID: string) => void
 }
 
@@ -145,6 +149,8 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
       }
     }
 
+    await input.persistSyncSessionRetentionCheckpoint(activeSessionID)
+
     const pollError = await deps.pollSyncSession(ctx, client, {
       sessionID: activeSessionID,
       agentToUse,
@@ -180,7 +186,7 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
         return pollError
       }
 
-      cleanupRetrySession(activeSessionID)
+      await cleanupRetrySession(activeSessionID)
 
       const retrySessionResult = await deps.createSyncSession(client, {
         parentSessionID: parentContext.sessionID,
@@ -196,7 +202,7 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
       activeSessionID = retrySessionResult.sessionID
       setSyncSessionID(activeSessionID)
       effectiveCategoryModel = nextFallbackModel
-      await registerSyncSession(activeSessionID)
+      await registerSyncSession(activeSessionID, effectiveCategoryModel)
       addRetryTaskToast({
         args,
         agentToUse,
