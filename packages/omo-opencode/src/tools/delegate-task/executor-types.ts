@@ -16,6 +16,7 @@ export interface ExecutorContext {
   modelFallbackControllerAccessor?: ModelFallbackControllerAccessor
   onSyncSessionCreated?: (event: { sessionID: string; parentID: string; title: string }) => Promise<void>
   syncPollTimeoutMs?: number
+  autoDeleteSubagentSessions?: boolean
 }
 
 export interface ParentContext {
@@ -38,5 +39,5 @@ export interface SessionMessage {
     providerID?: string
     variant?: string
   }
-  parts?: Array<{ type?: string; text?: string }>
+  parts?: Array<{ type?: string; text?: string; metadata?: Record<string, unknown> }>
 }
