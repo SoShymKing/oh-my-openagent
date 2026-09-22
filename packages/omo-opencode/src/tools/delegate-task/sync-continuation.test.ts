@@ -1126,8 +1126,9 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
     await executeSyncContinuation(args, mockCtx, mockExecutorCtx, { sessionID: "parent-session", messageID: "parent-message" }, deps)
 
     //#then
-    expect(promptAsyncCalls).toHaveLength(1)
-    expect(promptAsyncCalls[0]?.body.tools).toEqual({
+    const continuationPrompts = promptAsyncCalls.filter((call) => call.body.tools !== undefined)
+    expect(continuationPrompts).toHaveLength(1)
+    expect(continuationPrompts[0]?.body.tools).toEqual({
       task: false,
       call_omo_agent: false,
       question: false,
@@ -1201,8 +1202,9 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
     await executeSyncContinuation(args, mockCtx, mockExecutorCtx, { sessionID: "parent-session", messageID: "parent-message" }, deps)
 
     //#then
-    expect(promptAsyncCalls).toHaveLength(1)
-    expect(promptAsyncCalls[0]?.body.tools).toEqual({
+    const continuationPrompts = promptAsyncCalls.filter((call) => call.body.tools !== undefined)
+    expect(continuationPrompts).toHaveLength(1)
+    expect(continuationPrompts[0]?.body.tools).toEqual({
       task: false,
       call_omo_agent: false,
       question: false,
@@ -1276,8 +1278,9 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
     await executeSyncContinuation(args, mockCtx, mockExecutorCtx, { sessionID: "parent-session", messageID: "parent-message" }, deps)
 
     //#then
-    expect(promptAsyncCalls).toHaveLength(1)
-    expect(promptAsyncCalls[0]?.body.tools).toEqual({
+    const continuationPrompts = promptAsyncCalls.filter((call) => call.body.tools !== undefined)
+    expect(continuationPrompts).toHaveLength(1)
+    expect(continuationPrompts[0]?.body.tools).toEqual({
       task: true,
       call_omo_agent: true,
       question: false,

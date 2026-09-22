@@ -7,6 +7,7 @@ const CircuitBreakerConfigSchema = z.object({
 })
 
 export const BackgroundTaskConfigSchema = z.object({
+  autoDelete: z.boolean().optional(),
   defaultConcurrency: z.number().min(0).optional(),
   providerConcurrency: z.record(z.string(), z.number().min(0)).optional(),
   modelConcurrency: z.record(z.string(), z.number().min(0)).optional(),

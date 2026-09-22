@@ -1,6 +1,7 @@
 import { log } from "../../shared"
 import {
   cloneParentWake,
+  mergeParentWakeChildSessionIDs,
   mergeParentWakeNotifications,
   resolveParentWakePromptContext,
   type ParentWakePromptContext,
@@ -47,6 +48,7 @@ export class ParentWakePendingQueue {
     notification: string,
     promptContext: ParentWakePromptContext,
     shouldReply: boolean,
+    childSessionID?: string,
   ): void {
     const now = Date.now()
     const resolvedPromptContext = resolveParentWakePromptContext(promptContext)
@@ -56,10 +58,16 @@ export class ParentWakePendingQueue {
       const mergedNotifications = mergeParentWakeNotifications(pendingWake.notifications, notification)
       const notificationsChanged = mergedNotifications.length !== pendingWake.notifications.length
         || mergedNotifications.some((merged, index) => merged !== pendingWake.notifications[index])
+      const childSessionIDs = mergeParentWakeChildSessionIDs(
+        pendingWake.childSessionIDs,
+        childSessionID === undefined ? undefined : [childSessionID],
+      )
+      const childSessionsChanged = childSessionIDs?.length !== pendingWake.childSessionIDs?.length
       pendingWake.notifications = mergedNotifications
+      pendingWake.childSessionIDs = childSessionIDs
       pendingWake.promptContext = resolvedPromptContext
       pendingWake.shouldReply = pendingWake.shouldReply || shouldReply
-      if (notificationsChanged) {
+      if (notificationsChanged || childSessionsChanged) {
         delete pendingWake.noReplyAdmittedAt
         delete pendingWake.noAssistantOutputRetryCount
       }
@@ -69,6 +77,7 @@ export class ParentWakePendingQueue {
     this.pendingParentWakes.set(sessionID, {
       promptContext: resolvedPromptContext,
       notifications: [notification],
+      ...(childSessionID === undefined ? {} : { childSessionIDs: [childSessionID] }),
       shouldReply,
       queuedAt: now,
     })
@@ -84,6 +93,10 @@ export class ParentWakePendingQueue {
       pendingWake.notifications = pendingWake.notifications.reduce(
         (notifications, notification) => mergeParentWakeNotifications(notifications, notification),
         [...latestWake.notifications],
+      )
+      pendingWake.childSessionIDs = mergeParentWakeChildSessionIDs(
+        pendingWake.childSessionIDs,
+        latestWake.childSessionIDs,
       )
       pendingWake.shouldReply = pendingWake.shouldReply || latestWake.shouldReply
       pendingWake.promptContext = latestWake.promptContext

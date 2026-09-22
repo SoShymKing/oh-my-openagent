@@ -87,7 +87,7 @@ test.each([
     sessionID, spawnDepth: 1, taskId: "task_deleted", startTime: new Date(),
     syncPollTimeoutMs: 100, systemContent: undefined, toastManager: undefined, modelInfo: undefined,
     registerSyncSession: async () => {}, publishSyncMetadata: async () => {},
-    cleanupRetrySession: () => {}, setSyncSessionID: () => {},
+    cleanupRetrySession: () => {}, persistSyncSessionRetentionCheckpoint: async () => {}, setSyncSessionID: () => {},
   })
 
   expect(result).toBe(provider ? "fallback attempted" : terminal)

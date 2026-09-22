@@ -1,9 +1,14 @@
 import { handedBackSyncSessions, subagentSessions } from "../../features/claude-code-session-state"
+import type { SessionRetentionCheckpoint } from "../../features/background-agent/session-retention"
 import { getTaskToastManager } from "../../features/task-toast-manager"
 import type { ModelFallbackInfo } from "../../features/task-toast-manager/types"
 import type { FallbackEntry } from "../../shared/model-requirements"
 import { log } from "../../shared/logger"
-import { scheduleSyncSessionDeletion } from "./sync-session-cleanup"
+import {
+  acquireSyncSessionLease,
+  recordSyncSessionRetentionCheckpoint,
+  scheduleSyncSessionDeletion,
+} from "./sync-session-cleanup"
 import { formatDetailedError } from "./error-formatting"
 import type { ExecutorContext, ParentContext } from "./executor-types"
 import { reserveSyncSubagentSpawn } from "./sync-spawn-reservation"
@@ -29,6 +34,11 @@ export async function executeSyncTask(
   const toastManager = getTaskToastManager()
   let taskId: string | undefined
   let syncSessionID: string | undefined
+  let retentionDirectory = directory
+  let returnedResult = false
+  let terminalStatus: SessionRetentionCheckpoint["terminalStatus"] = "error"
+  const retentionCheckpoints = new Map<string, SessionRetentionCheckpoint>()
+  const releaseSessionLeases = new Map<string, () => void>()
   let spawnReservation:
     | Awaited<ReturnType<ExecutorContext["manager"]["reserveSubagentSpawn"]>>
     | undefined
@@ -63,19 +73,45 @@ export async function executeSyncTask(
     const sessionID = createSessionResult.sessionID
     spawnReservation?.commit()
     syncSessionID = sessionID
+    retentionDirectory = createSessionResult.parentDirectory
+    taskId = `sync_${sessionID.slice(0, 8)}`
 
-    const registerSyncSession = async (newSessionID: string): Promise<void> => {
+    const registerSyncSession = async (
+      newSessionID: string,
+      currentModel: DelegatedModelConfig | undefined,
+    ): Promise<void> => {
       syncSessionID = newSessionID
+      releaseSessionLeases.set(newSessionID, acquireSyncSessionLease(newSessionID))
+      const checkpoint: SessionRetentionCheckpoint = {
+        version: 1,
+        mode: "sync",
+        sessionID: newSessionID,
+        taskID: taskId,
+        parentSessionID: parentContext.sessionID,
+        parentMessageID: parentContext.messageID,
+        agent: agentToUse,
+        ...(currentModel === undefined ? {} : { model: currentModel }),
+        ...(args.category === undefined ? {} : { category: args.category }),
+        autoDelete: executorCtx.autoDeleteSubagentSessions ?? true,
+      }
+      retentionCheckpoints.set(newSessionID, checkpoint)
       await registerSyncSessionSideEffects({
         args,
         executorCtx,
         sessionID: newSessionID,
         parentContext,
         agentToUse,
-        categoryModel,
+        categoryModel: currentModel,
         fallbackChain,
         systemContent,
       })
+    }
+
+    const persistSyncSessionRetentionCheckpoint = async (currentSessionID: string): Promise<void> => {
+      const checkpoint = retentionCheckpoints.get(currentSessionID)
+      if (checkpoint) {
+        await recordSyncSessionRetentionCheckpoint(client, checkpoint, retentionDirectory)
+      }
     }
 
     const publishSyncMetadata = async (
@@ -94,9 +130,8 @@ export async function executeSyncTask(
       })
     }
 
-    await registerSyncSession(sessionID)
+    await registerSyncSession(sessionID, categoryModel)
 
-    taskId = `sync_${sessionID.slice(0, 8)}`
     const startTime = new Date()
 
     if (toastManager) {
@@ -117,12 +152,24 @@ export async function executeSyncTask(
       syncSessionID = currentSessionID
     }
 
-    const cleanupRetrySession = (currentSessionID: string): void => {
+    const cleanupRetrySession = async (currentSessionID: string): Promise<void> => {
       cleanupSyncSessionSideEffects(currentSessionID, executorCtx)
+      const checkpoint = retentionCheckpoints.get(currentSessionID)
+      if (checkpoint) {
+        const terminalCheckpoint: SessionRetentionCheckpoint = {
+          ...checkpoint,
+          terminalStatus: "error",
+          terminalAt: Date.now(),
+        }
+        retentionCheckpoints.set(currentSessionID, terminalCheckpoint)
+        await recordSyncSessionRetentionCheckpoint(client, terminalCheckpoint, retentionDirectory)
+      }
+      releaseSessionLeases.get(currentSessionID)?.()
+      releaseSessionLeases.delete(currentSessionID)
     }
 
     try {
-      return await runSyncTaskLoop({
+      const result = await runSyncTaskLoop({
         args,
         ctx,
         executorCtx: {
@@ -145,8 +192,12 @@ export async function executeSyncTask(
         registerSyncSession,
         publishSyncMetadata,
         cleanupRetrySession,
+        persistSyncSessionRetentionCheckpoint,
         setSyncSessionID,
       })
+      terminalStatus = "completed"
+      returnedResult = true
+      return result
     } finally {
       if (toastManager && taskId !== undefined) {
         toastManager.removeTask(taskId)
@@ -155,6 +206,8 @@ export async function executeSyncTask(
   } catch (error) {
     spawnReservation?.rollback()
     const errorToFormat = error instanceof Error ? error : String(error)
+    terminalStatus = "error"
+    returnedResult = true
     return formatDetailedError(errorToFormat, {
       operation: "Execute task",
       args,
@@ -163,6 +216,22 @@ export async function executeSyncTask(
       category: args.category,
     })
   } finally {
+    const terminalAt = Date.now()
+    for (const [sessionID, checkpoint] of retentionCheckpoints) {
+      const terminalCheckpoint: SessionRetentionCheckpoint = {
+        ...checkpoint,
+        terminalStatus: checkpoint.terminalStatus ?? (sessionID === syncSessionID ? terminalStatus : "error"),
+        terminalAt: checkpoint.terminalAt ?? terminalAt,
+        ...(returnedResult
+          ? { handoffConfirmedAt: checkpoint.handoffConfirmedAt ?? terminalAt }
+          : {}),
+      }
+      retentionCheckpoints.set(sessionID, terminalCheckpoint)
+      await recordSyncSessionRetentionCheckpoint(client, terminalCheckpoint, retentionDirectory)
+      releaseSessionLeases.get(sessionID)?.()
+      releaseSessionLeases.delete(sessionID)
+      scheduleSyncSessionDeletion(client, sessionID, retentionDirectory)
+    }
     if (syncSessionID) {
       cleanupSyncSessionSideEffects(syncSessionID, executorCtx)
       handedBackSyncSessions.add(syncSessionID)
@@ -180,7 +249,6 @@ export async function executeSyncTask(
           log(`[task] Failed to abort completed sync session:`, error)
         })
       }
-      scheduleSyncSessionDeletion(client, syncSessionID)
     }
     if (concurrencyAcquired && typeof manager?.releaseSyncSubagentConcurrency === "function") {
       manager.releaseSyncSubagentConcurrency(concurrencyModel)

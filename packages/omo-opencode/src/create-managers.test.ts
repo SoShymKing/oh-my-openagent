@@ -13,6 +13,7 @@ type CleanupRegistration = {
 }
 
 type CleanupSessionTeamRunsFn = typeof import("./features/team-mode/team-runtime/session-cleanup").cleanupSessionTeamRuns
+type ReconcilePersistedSessionRetentionFn = typeof import("./features/background-agent/session-retention").reconcilePersistedSessionRetention
 
 const markServerRunningInProcess = mock(() => {})
 let backgroundManagerOptions: {
@@ -33,6 +34,13 @@ const cleanupSessionTeamRunsMock = mock(async (input: Parameters<CleanupSessionT
 const tuiMirrorConstructedInputs: unknown[] = []
 let tuiMirrorStartCount = 0
 let tuiMirrorStopCount = 0
+const reconcilePersistedSessionRetention = mock(async () => ({
+  status: "completed" as const,
+  scanned: 0,
+  deleted: 0,
+  missing: 0,
+  preserved: 0,
+}))
 
 class MockBackgroundManager {
   constructor(config: {
@@ -105,6 +113,7 @@ function createDeps(): NonNullable<Parameters<typeof createManagers>[0]["deps"]>
     cleanupSessionTeamRunsFn: cleanupSessionTeamRunsMock as CleanupSessionTeamRunsFn,
     createConfigHandlerFn: createConfigHandler,
     markServerRunningInProcessFn: markServerRunningInProcess,
+    reconcilePersistedSessionRetentionFn: reconcilePersistedSessionRetention as ReconcilePersistedSessionRetentionFn,
   }
 }
 
@@ -172,6 +181,7 @@ describe("createManagers", () => {
     tuiMirrorConstructedInputs.length = 0
     tuiMirrorStartCount = 0
     tuiMirrorStopCount = 0
+    reconcilePersistedSessionRetention.mockClear()
   })
 
   afterEach(() => {
@@ -192,6 +202,29 @@ describe("createManagers", () => {
 
     expect(markServerRunningInProcess).not.toHaveBeenCalled()
   })
+
+  for (const autoDelete of [false, true]) {
+    it(`#given background autoDelete=${autoDelete} #when managers are created #then startup reconciliation receives the applied veto`, () => {
+      const ctx = createContext("/tmp/project")
+
+      createManagers({
+        ctx,
+        pluginConfig: OhMyOpenCodeConfigSchema.parse({ background_task: { autoDelete } }),
+        tmuxConfig: createTmuxConfig(false),
+        modelCacheState: createModelCacheState(),
+        backgroundNotificationHookEnabled: false,
+        deps: createDeps(),
+      })
+
+      expect(reconcilePersistedSessionRetention).toHaveBeenCalledTimes(1)
+      expect(reconcilePersistedSessionRetention).toHaveBeenCalledWith({
+        client: ctx.client,
+        leases: expect.any(Object),
+        autoDelete,
+        directory: "/tmp/project",
+      })
+    })
+  }
 
   it("#given tmux integration is enabled #when managers are created #then it marks the tmux server as running", () => {
     const args = {

@@ -2796,6 +2796,7 @@ describe("BackgroundManager.tryCompleteTask", () => {
   test("should avoid overlapping promptAsync calls when tasks complete concurrently", async () => {
     // given
     type PromptAsyncBody = Record<string, unknown> & { noReply?: boolean }
+    const parentSessionID = "parent-session"
 
     let resolveMessages: ((value: { data: unknown[] }) => void) | undefined
     const messagesBarrier = new Promise<{ data: unknown[] }>((resolve) => {
@@ -2819,6 +2820,7 @@ describe("BackgroundManager.tryCompleteTask", () => {
         abort: async () => ({}),
         messages: async () => messagesBarrier,
         promptAsync: async (args: { path: { id: string }; body: PromptAsyncBody }) => {
+          if (args.path.id !== parentSessionID) return {}
           promptBodies.push(args.body)
 
           if (!promptInFlight) {
@@ -2846,7 +2848,6 @@ describe("BackgroundManager.tryCompleteTask", () => {
     manager.shutdown()
     manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
 
-    const parentSessionID = "parent-session"
     const taskA = createMockTask({
       id: "task-a",
       sessionId: "session-a",
@@ -7218,6 +7219,7 @@ describe("BackgroundManager.pruneStaleTasksAndNotifications - removes pruned tas
       session: {
         prompt: async () => ({}),
         promptAsync: async (args: { path: { id: string }; body: Record<string, unknown> & { noReply?: boolean; parts?: unknown[] } }) => {
+          if (args.path.id !== "parent-stale-notify-cleanup") return {}
           const firstPart = args.body.parts?.[0]
           if (firstPart && typeof firstPart === "object" && "text" in firstPart && typeof firstPart.text === "string") {
             notifications.push(firstPart.text)

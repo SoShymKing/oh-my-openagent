@@ -66,7 +66,8 @@ for (const [rejected, wrapped] of [[false, false], [true, false], [true, true]] 
   })
 
   test(`#given history success then dispatch 404 (${wrapped ? "SDK wrapper" : rejected ? "rejected" : "fulfilled"}) #when continuing #then no polling`, async () => {
-    const promptAsync = mock(async () => {
+    const promptAsync = mock(async (input: { body?: { noReply?: boolean } }) => {
+      if (input.body?.noReply) return {}
       if (wrapped) throw new Error("Session record missing", { cause: { body: missing.error, status: 404 } })
       if (rejected) throw missing.error
       return missing
@@ -79,7 +80,8 @@ for (const [rejected, wrapped] of [[false, false], [true, false], [true, true]] 
 
     const result = await executeSyncContinuation(args, context, executor, context, { pollSyncSession, fetchSyncResult })
 
-    expect(promptAsync).toHaveBeenCalledTimes(1)
+    const continuationPrompts = promptAsync.mock.calls.filter(([input]) => !input.body?.noReply)
+    expect(continuationPrompts).toHaveLength(1)
     expect(pollSyncSession).not.toHaveBeenCalled()
     expect(fetchSyncResult).not.toHaveBeenCalled()
     expect(result).toContain("NotFoundError")

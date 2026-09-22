@@ -2031,7 +2031,7 @@ describe("sisyphus-task", () => {
     //#given a session with a previous message that has variant "max"
     const { createDelegateTask } = require("./tools")
 
-    const promptMock = mock(async () => {
+    const promptMock = mock(async (_input: { body?: Record<string, unknown> }) => {
       return { data: {} }
     })
 
@@ -2121,7 +2121,9 @@ describe("sisyphus-task", () => {
 
     //#then prompt should include variant from previous message
     expect(promptMock).toHaveBeenCalled()
-    const callArgs = promptMock.mock.calls[0][0]
+    const callArgs = promptMock.mock.calls.find(([input]) => input.body?.noReply !== true)?.[0]
+    expect(callArgs).toBeDefined()
+    if (!callArgs) throw new Error("Expected continuation prompt")
     expect(callArgs.body.variant).toBe("max")
     expect(callArgs.body.agent).toBe("sisyphus-junior")
     expect(callArgs.body.model).toEqual({ providerID: "anthropic", modelID: "claude-opus-4-7" })
@@ -2252,7 +2254,8 @@ describe("sisyphus-task", () => {
         launch: async () => ({}),
       }
 
-       const promptMock = async () => {
+       const promptMock = async (input: { body?: { noReply?: boolean } }) => {
+         if (input.body?.noReply) return { data: undefined }
          promptCalls += 1
          throw new Error("JSON Parse error: Unexpected EOF")
        }

@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
 import type { ToolContext } from "@opencode-ai/plugin/tool"
 import type { BackgroundTask } from "../../features/background-agent"
 import type { BackgroundOutputClient, BackgroundOutputManager } from "./clients"
@@ -160,4 +160,77 @@ describe("createBackgroundOutput block=true polling", () => {
     expect(output).toContain("Timed out waiting")
     expect(output).toContain("still running")
   })
+})
+
+describe("createBackgroundOutput terminal handoff", () => {
+  for (const status of ["completed", "error", "cancelled", "interrupt"] as const) {
+    test(`confirms manual handoff after returning ${status} output`, async () => {
+      const task = createTask({ status, error: status === "error" ? "task failed" : undefined })
+      const confirmBackgroundOutputHandoff = mock(async () => {})
+      const manager: BackgroundOutputManager = {
+        getTask: id => (id === task.id ? task : undefined),
+        confirmBackgroundOutputHandoff,
+      }
+      const tool = createBackgroundOutput(manager, createMockClient())
+
+      const output = await tool.execute({ task_id: task.id }, mockContext)
+
+      expect(output).toBeString()
+      expect(confirmBackgroundOutputHandoff).toHaveBeenCalledTimes(1)
+      expect(confirmBackgroundOutputHandoff).toHaveBeenCalledWith(task.sessionId)
+    })
+  }
+
+  test("confirms terminal full-session output", async () => {
+    const task = createTask({ status: "completed" })
+    const confirmBackgroundOutputHandoff = mock(async () => {})
+    const manager: BackgroundOutputManager = {
+      getTask: id => (id === task.id ? task : undefined),
+      confirmBackgroundOutputHandoff,
+    }
+    const tool = createBackgroundOutput(manager, createMockClient())
+
+    await tool.execute({ task_id: task.id, full_session: true }, mockContext)
+
+    expect(confirmBackgroundOutputHandoff).toHaveBeenCalledTimes(1)
+    expect(confirmBackgroundOutputHandoff).toHaveBeenCalledWith(task.sessionId)
+  })
+
+  test("does not confirm output while the task remains active", async () => {
+    const task = createTask({ status: "running" })
+    const confirmBackgroundOutputHandoff = mock(async () => {})
+    const manager: BackgroundOutputManager = {
+      getTask: id => (id === task.id ? task : undefined),
+      confirmBackgroundOutputHandoff,
+    }
+    const tool = createBackgroundOutput(manager, createMockClient())
+
+    await tool.execute({ task_id: task.id }, mockContext)
+
+    expect(confirmBackgroundOutputHandoff).not.toHaveBeenCalled()
+  })
+
+  for (const fullSession of [false, true]) {
+    test(`does not confirm handoff when terminal ${fullSession ? "full-session" : "result"} retrieval fails`, async () => {
+      const task = createTask({ status: "completed" })
+      const confirmBackgroundOutputHandoff = mock(async () => {})
+      const manager: BackgroundOutputManager = {
+        getTask: id => (id === task.id ? task : undefined),
+        confirmBackgroundOutputHandoff,
+      }
+      const client: BackgroundOutputClient = {
+        session: {
+          messages: async () => {
+            throw new Error("messages unavailable")
+          },
+        },
+      }
+      const tool = createBackgroundOutput(manager, client)
+
+      const output = await tool.execute({ task_id: task.id, full_session: fullSession }, mockContext)
+
+      expect(output).toContain("Error fetching messages: messages unavailable")
+      expect(confirmBackgroundOutputHandoff).not.toHaveBeenCalled()
+    })
+  }
 })

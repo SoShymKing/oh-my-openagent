@@ -1,6 +1,7 @@
 import { relative } from "node:path"
 
 import type { OmoConfigEnv } from "@oh-my-opencode/omo-config-core"
+import { isPlainRecord } from "@oh-my-opencode/utils"
 
 import { applyDisabledProviders } from "../shared/disabled-providers"
 import { log } from "../shared/logger"
@@ -67,6 +68,31 @@ function mergeViews(views: readonly LoadedConfigView[]): OhMyOpenCodeConfig {
     config = mergeConfigs(config, view.config)
   }
   return config
+}
+
+function resolveBackgroundTaskAutoDelete(views: readonly OmoOpenCodeConfigView[]): boolean {
+  for (const view of views) {
+    const backgroundTask = view.config.background_task
+    if (backgroundTask === undefined) continue
+    if (!isPlainRecord(backgroundTask)) return false
+    if (!Object.hasOwn(backgroundTask, "autoDelete")) continue
+    if (backgroundTask.autoDelete !== true) return false
+  }
+
+  return true
+}
+
+function applyBackgroundTaskAutoDelete(
+  config: OhMyOpenCodeConfig,
+  views: readonly OmoOpenCodeConfigView[],
+): OhMyOpenCodeConfig {
+  return {
+    ...config,
+    background_task: {
+      ...config.background_task,
+      autoDelete: resolveBackgroundTaskAutoDelete(views),
+    },
+  }
 }
 
 function protectUserFields(
@@ -189,9 +215,12 @@ export function validatePluginConfig(
   const firstFailingView = views.find((view) => view.messages.length > 0)
   const firstView = views[0]
   const userConfig = parseConfig(chain.protectedUserView)
-  const config = applyDisabledProviders(materializeAgentModelChains(
-    protectUserFields(mergeViews(views), userConfig),
-  ))
+  const config = applyBackgroundTaskAutoDelete(
+    applyDisabledProviders(materializeAgentModelChains(
+      protectUserFields(mergeViews(views), userConfig),
+    )),
+    chain.views,
+  )
   warnLegacyUlwExecuteKey(chain.views)
 
   return {

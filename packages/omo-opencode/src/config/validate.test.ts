@@ -72,6 +72,53 @@ describe("validatePluginConfig", () => {
       expect(result.valid).toBe(true)
       expect(result.path).toBeNull()
       expect(result.config.tui?.sidebar.enabled).toBe(true)
+      expect(result.config.background_task?.autoDelete).toBe(true)
+    })
+  })
+
+  it("#given autoDelete true #when validating #then enables automatic session deletion", () => {
+    withOmoConfig("auto-delete-true", (fixture) => {
+      writeProjectConfig(fixture, { "[opencode]": { background_task: { autoDelete: true } } })
+
+      const result = validatePluginConfig(fixture.project)
+
+      expect(result.valid).toBe(true)
+      expect(result.config.background_task?.autoDelete).toBe(true)
+    })
+  })
+
+  it("#given autoDelete false #when validating #then disables automatic session deletion", () => {
+    withOmoConfig("auto-delete-false", (fixture) => {
+      writeProjectConfig(fixture, { "[opencode]": { background_task: { autoDelete: false } } })
+
+      const result = validatePluginConfig(fixture.project)
+
+      expect(result.valid).toBe(true)
+      expect(result.config.background_task?.autoDelete).toBe(false)
+    })
+  })
+
+  it("#given false then true across applied views #when validating #then false vetoes automatic session deletion", () => {
+    withOmoConfig("auto-delete-veto", (fixture) => {
+      writeUserConfig(fixture, { "[opencode]": { background_task: { autoDelete: false } } })
+      writeProjectConfig(fixture, { "[opencode]": { background_task: { autoDelete: true } } })
+
+      const result = validatePluginConfig(fixture.project)
+
+      expect(result.valid).toBe(true)
+      expect(result.config.background_task?.autoDelete).toBe(false)
+    })
+  })
+
+  it("#given malformed autoDelete #when validating #then reports the error and fails closed", () => {
+    withOmoConfig("auto-delete-malformed", (fixture) => {
+      writeProjectConfig(fixture, { "[opencode]": { background_task: { autoDelete: "yes" } } })
+
+      const result = validatePluginConfig(fixture.project)
+
+      expect(result.valid).toBe(false)
+      expect(result.messages.some((message) => message.includes("background_task.autoDelete"))).toBe(true)
+      expect(result.config.background_task?.autoDelete).toBe(false)
     })
   })
 

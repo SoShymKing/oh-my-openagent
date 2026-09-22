@@ -24,6 +24,7 @@ type ParentWakePromptDispatchInput = {
   readonly getDispatchedWake: () => PendingParentWake | undefined
   readonly hasRecordedPromptAfterDispatch: (wake: PendingParentWake) => Promise<boolean>
   readonly trackDispatchedWake: (wake: PendingParentWake, dispatchedAt: number) => void
+  readonly confirmHandoff?: (childSessionIDs: readonly string[], confirmedAt: number) => void | Promise<void>
   readonly requeueWake: (wake: PendingParentWake) => void
   readonly scheduleFlush: (delayMs?: number) => void
 }
@@ -66,6 +67,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
         if (await input.hasRecordedPromptAfterDispatch(dispatchedWake)) {
           markRetainedNoReplyAdmission(input, dispatchStartedAt)
           input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+          await confirmHandoff(input)
           log("[background-agent] Treated failed parent wake prompt as accepted after observing session history:", {
             sessionID: input.sessionID,
             error: promptResult.error,
@@ -103,11 +105,26 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
     delete input.latestWake.allowEmptyAssistantTurnRetry
     markRetainedNoReplyAdmission(input, dispatchStartedAt)
     input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+    await confirmHandoff(input)
   } catch (error) {
     const errorText = error instanceof Error ? `${error.name}: ${error.message}` : getErrorText(error) || String(error)
     input.requeueWake(input.latestWake)
     input.scheduleFlush()
     log("[background-agent] Failed to send deferred parent wake:", { sessionID: input.sessionID, error: errorText })
+  }
+}
+
+async function confirmHandoff(input: ParentWakePromptDispatchInput): Promise<void> {
+  const childSessionIDs = input.latestWake.childSessionIDs
+  if (childSessionIDs === undefined || childSessionIDs.length === 0 || input.confirmHandoff === undefined) return
+
+  try {
+    await input.confirmHandoff(childSessionIDs, Date.now())
+  } catch (error) {
+    log("[background-agent] Failed to record accepted parent wake handoff:", {
+      childSessionIDs,
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }
 

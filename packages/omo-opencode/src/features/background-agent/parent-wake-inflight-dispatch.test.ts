@@ -8,16 +8,22 @@ type PromptAsyncCall = {
   query?: { directory: string }
 }
 
-function createNotifier(promptAsyncImpl: (call: PromptAsyncCall) => Promise<unknown>): {
+function createNotifier(
+  promptAsyncImpl: (call: PromptAsyncCall) => Promise<unknown>,
+  options?: {
+    readonly messages?: () => Promise<unknown>
+    readonly onHandoffConfirmed?: (childSessionIDs: readonly string[], confirmedAt: number) => void
+  },
+): {
   notifier: ParentWakeNotifier
   promptAsyncCalls: PromptAsyncCall[]
 } {
   const promptAsyncCalls: PromptAsyncCall[] = []
   const client: ConstructorParameters<typeof ParentWakeNotifier>[0]["client"] = {
     session: {
-      messages: async () => ({
+      messages: options?.messages ?? (async () => ({
         data: [{ info: { role: "assistant", finish: "stop", time: { created: Date.now() - 10_000 } } }],
-      }),
+      })),
       status: async () => ({ data: {} }),
       promptAsync: async (call: PromptAsyncCall) => {
         promptAsyncCalls.push(call)
@@ -34,6 +40,7 @@ function createNotifier(promptAsyncImpl: (call: PromptAsyncCall) => Promise<unkn
       enqueueNotificationForParent: async (_sessionID, operation) => {
         await operation()
       },
+      onHandoffConfirmed: options?.onHandoffConfirmed,
     },
     {
       pendingRetryMs: 1_000,
@@ -59,13 +66,16 @@ describe("ParentWakeNotifier — in-flight dispatch tracking (P1 race)", () => {
     const dispatchStarted = new Promise<void>((resolve) => {
       signalDispatchStarted = resolve
     })
+    const handoffs: Array<{ childSessionIDs: readonly string[]; confirmedAt: number }> = []
     const { notifier } = createNotifier(async () => {
       signalDispatchStarted?.()
       await dispatchGate
       return { data: {} }
+    }, {
+      onHandoffConfirmed: (childSessionIDs, confirmedAt) => handoffs.push({ childSessionIDs, confirmedAt }),
     })
     const sessionID = "parent-inflight-dispatch"
-    notifier.queuePendingParentWake(sessionID, "wake A", { agent: "sisyphus" }, true)
+    notifier.queuePendingParentWake(sessionID, "wake A", { agent: "sisyphus" }, true, undefined, "ses_child")
 
     try {
       // when: kick off the flush but do not await it; wait until the dispatch await
@@ -89,6 +99,8 @@ describe("ParentWakeNotifier — in-flight dispatch tracking (P1 race)", () => {
       // so the owed-wake signal is continuous across the whole window.
       expect(notifier.hasInFlightParentWakeDispatch(sessionID)).toBe(false)
       expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(true)
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]?.childSessionIDs).toEqual(["ses_child"])
     } finally {
       releaseDispatch?.()
       notifier.shutdown()
@@ -97,11 +109,14 @@ describe("ParentWakeNotifier — in-flight dispatch tracking (P1 race)", () => {
   })
 
   test("#given a dispatch throws mid-flight #when it is requeued #then the in-flight marker is cleared without leaking", async () => {
+    const handoffs: string[][] = []
     const { notifier } = createNotifier(async () => {
       throw new Error("JSON Parse error: Unexpected EOF")
+    }, {
+      onHandoffConfirmed: (childSessionIDs) => handoffs.push([...childSessionIDs]),
     })
     const sessionID = "parent-inflight-dispatch-failure"
-    notifier.queuePendingParentWake(sessionID, "wake A", { agent: "sisyphus" }, true)
+    notifier.queuePendingParentWake(sessionID, "wake A", { agent: "sisyphus" }, true, undefined, "ses_child")
 
     try {
       await notifier.flushPendingParentWake(sessionID)
@@ -110,6 +125,39 @@ describe("ParentWakeNotifier — in-flight dispatch tracking (P1 race)", () => {
       // instead requeued into the pending map for retry.
       expect(notifier.hasInFlightParentWakeDispatch(sessionID)).toBe(false)
       expect(notifier.getPendingParentWakes().has(sessionID)).toBe(true)
+      expect(handoffs).toEqual([])
+    } finally {
+      notifier.shutdown()
+      releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given an ambiguous dispatch recorded in history #when verified #then confirms child handoff", async () => {
+    let dispatchAttempted = false
+    const handoffs: string[][] = []
+    const { notifier } = createNotifier(async () => {
+      dispatchAttempted = true
+      throw new Error("JSON Parse error: Unexpected EOF")
+    }, {
+      messages: async () => ({
+        data: dispatchAttempted
+          ? [{
+              info: { role: "user", time: { created: Date.now() } },
+              parts: [{ type: "text", text: "wake A" }],
+            }]
+          : [{ info: { role: "assistant", finish: "stop", time: { created: Date.now() - 10_000 } } }],
+      }),
+      onHandoffConfirmed: (childSessionIDs) => handoffs.push([...childSessionIDs]),
+    })
+    const sessionID = "parent-ambiguous-history-handoff"
+    notifier.queuePendingParentWake(sessionID, "wake A", { agent: "sisyphus" }, true, undefined, "ses_child")
+
+    try {
+      await notifier.flushPendingParentWake(sessionID)
+
+      expect(handoffs).toEqual([["ses_child"]])
+      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(true)
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()

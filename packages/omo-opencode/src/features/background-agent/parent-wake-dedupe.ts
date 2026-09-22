@@ -10,6 +10,7 @@ export type ParentWakePromptContext = {
 export type PendingParentWake = {
   promptContext: ParentWakePromptContext
   notifications: string[]
+  childSessionIDs?: string[]
   shouldReply: boolean
   queuedAt?: number
   dispatchedAt?: number
@@ -34,6 +35,7 @@ export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
   return {
     promptContext,
     notifications: [...wake.notifications],
+    ...(wake.childSessionIDs !== undefined ? { childSessionIDs: [...wake.childSessionIDs] } : {}),
     shouldReply: wake.shouldReply,
     ...(wake.queuedAt !== undefined ? { queuedAt: wake.queuedAt } : {}),
     ...(wake.dispatchedAt !== undefined ? { dispatchedAt: wake.dispatchedAt } : {}),
@@ -54,6 +56,15 @@ export function isRedundantParentWake(latestWake: PendingParentWake, dispatchedW
   return parentWakePromptContextMatches(latestWake, dispatchedWake)
     && parentWakeReplyModeIsCovered(latestWake, dispatchedWake)
     && parentWakeNotificationsAreCovered(latestWake, dispatchedWake)
+    && parentWakeChildSessionsAreCovered(latestWake, dispatchedWake)
+}
+
+export function mergeParentWakeChildSessionIDs(
+  existing: readonly string[] | undefined,
+  next: readonly string[] | undefined,
+): string[] | undefined {
+  const merged = [...new Set([...(existing ?? []), ...(next ?? [])])]
+  return merged.length > 0 ? merged : undefined
 }
 
 export function mergeParentWakeNotifications(existingNotifications: readonly string[], nextNotification: string): string[] {
@@ -92,6 +103,11 @@ function parentWakeReplyModeIsCovered(latestWake: PendingParentWake, dispatchedW
 function parentWakeNotificationsAreCovered(latestWake: PendingParentWake, dispatchedWake: PendingParentWake): boolean {
   const dispatchedNotifications = new Set(dispatchedWake.notifications)
   return latestWake.notifications.every((notification) => dispatchedNotifications.has(notification))
+}
+
+function parentWakeChildSessionsAreCovered(latestWake: PendingParentWake, dispatchedWake: PendingParentWake): boolean {
+  const dispatchedChildSessionIDs = new Set(dispatchedWake.childSessionIDs ?? [])
+  return (latestWake.childSessionIDs ?? []).every((sessionID) => dispatchedChildSessionIDs.has(sessionID))
 }
 
 export function isFailureParentWake(wake: PendingParentWake): boolean {

@@ -241,6 +241,7 @@ export class ParentWakeFlushRunner {
         hasRecordedPromptAfterDispatch: (wake) =>
           this.deps.sessionInspector.hasRecordedPromptMessageAfterDispatchedWake(sessionID, wake),
         trackDispatchedWake: (wake, dispatchedAt) => this.deps.dispatchedTracker.trackWake(sessionID, wake, dispatchedAt),
+        confirmHandoff: this.deps.notifierDeps.onHandoffConfirmed,
         requeueWake: (wake) => this.requeueWake(sessionID, wake),
         scheduleFlush: (delayMs) => this.schedulePendingParentWakeFlush(sessionID, delayMs),
       })

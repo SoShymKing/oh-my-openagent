@@ -9,6 +9,24 @@ import { getBackgroundOutputFetchTimeoutMs, withSdkCallTimeout } from "./with-sd
 const MAX_MESSAGE_LIMIT = 200
 const THINKING_MAX_CHARS = 2000
 
+type FullSessionOptions = {
+  includeThinking: boolean
+  messageLimit?: number
+  sinceMessageId?: string
+  includeToolResults: boolean
+  thinkingMaxChars?: number
+  fromEnd?: boolean
+}
+
+type FullSessionFormat = {
+  readonly output: string
+  readonly handoffEligible: boolean
+}
+
+function formatted(output: string, handoffEligible = true): FullSessionFormat {
+  return { output, handoffEligible }
+}
+
 function extractToolResultText(part: NonNullable<BackgroundOutputMessage["parts"]>[number]): string[] {
   if (typeof part.content === "string" && part.content.length > 0) {
     return [part.content]
@@ -31,20 +49,13 @@ function extractToolResultText(part: NonNullable<BackgroundOutputMessage["parts"
   return []
 }
 
-export async function formatFullSession(
+export async function formatFullSessionWithHandoffStatus(
   task: BackgroundTask,
   client: BackgroundOutputClient,
-  options: {
-    includeThinking: boolean
-    messageLimit?: number
-    sinceMessageId?: string
-    includeToolResults: boolean
-    thinkingMaxChars?: number
-    fromEnd?: boolean
-  }
-): Promise<string> {
+  options: FullSessionOptions,
+): Promise<FullSessionFormat> {
   if (!task.sessionId) {
-    return formatTaskStatus(task)
+    return formatted(formatTaskStatus(task), false)
   }
 
   let messagesResult: BackgroundOutputMessagesResult
@@ -54,17 +65,17 @@ export async function formatFullSession(
       getBackgroundOutputFetchTimeoutMs(),
     )
   } catch (error) {
-    return `Error fetching messages: ${error instanceof Error ? error.message : String(error)}`
+    return formatted(`Error fetching messages: ${error instanceof Error ? error.message : String(error)}`, false)
   }
 
   const errorMessage = getErrorMessage(messagesResult)
   if (errorMessage) {
-    return `Error fetching messages: ${errorMessage}`
+    return formatted(`Error fetching messages: ${errorMessage}`, false)
   }
 
   const rawMessages = extractMessages(messagesResult)
   if (!Array.isArray(rawMessages)) {
-    return "Error fetching messages: invalid response"
+    return formatted("Error fetching messages: invalid response", false)
   }
 
   const sortedMessages = [...rawMessages].sort((a, b) => {
@@ -77,7 +88,7 @@ export async function formatFullSession(
   if (options.sinceMessageId) {
     const index = filteredMessages.findIndex((message) => message.id === options.sinceMessageId)
     if (index === -1) {
-      return `Error: since_message_id not found: ${options.sinceMessageId}`
+      return formatted(`Error: since_message_id not found: ${options.sinceMessageId}`, false)
     }
     filteredMessages = filteredMessages.slice(index + 1)
   }
@@ -135,7 +146,7 @@ export async function formatFullSession(
   if (visibleMessages.length === 0) {
     lines.push("")
     lines.push("(No messages found)")
-    return lines.join("\n")
+    return formatted(lines.join("\n"))
   }
 
   for (const message of visibleMessages) {
@@ -165,5 +176,13 @@ export async function formatFullSession(
     }
   }
 
-  return lines.join("\n")
+  return formatted(lines.join("\n"))
+}
+
+export async function formatFullSession(
+  task: BackgroundTask,
+  client: BackgroundOutputClient,
+  options: FullSessionOptions,
+): Promise<string> {
+  return (await formatFullSessionWithHandoffStatus(task, client, options)).output
 }
