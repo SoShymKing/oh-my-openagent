@@ -12,6 +12,7 @@ Use the `task` tool. A single spawn needs `prompt` plus exactly one of `category
 - `run_in_background: true` returns a task id (prefixed `st_`) immediately so you can keep working and check back later.
 - `name` gives the child a stable, human-friendly handle within the session so you can steer it by name instead of id.
 - `model` is valid only with `subagent_type`; category-routed tasks reject it and resolve their model from category config. `load_skills` prepends named SKILL.md content to the child prompt.
+- `subagent_type` must name a loaded agent. A name that is unknown or disabled fails with `unknown_target` listing the available agents; it is never resolved as a category of the same name, so `task(subagent_type="architect")` fails instead of quietly returning the `architect` category's model. Pass `category: "architect"` when a category is what you want.
 
 To continue an existing child with full context instead of spawning a new one, use `task_send` with `to` set to the child id or name.
 
@@ -36,7 +37,9 @@ Two runners back a child (`packages/senpi-task/src/runners/`):
 - **in-process (default).** The child runs inside the same Senpi runtime and executes through the SAME parent tool closures, minus `task`, `task_*`, `team_*`, and `dag` (member-scoped tools are the only sanctioned bypass). This is the cheapest path and needs no extra process.
 - **process.** The child is spawned as an isolated Senpi process. Steering (`steer` / `abort` / `prompt`) crosses a JSON-RPC boundary, and the child's transcript is written below `children/<taskId>/sessions/<taskId>/`. On the next session start, a dead process child with a persisted session can be respawned without replaying its original prompt and rebound with `switch_session`.
 
-The default comes from `task.default_execution_mode` in `omo.json`; a per-agent `execution_mode` can override it.
+A process child is itself run one of two ways: as a SESSION of the machine-wide engine daemon (the default on macOS/Linux, `task.process_runner: "host"`), or as its own OS process (`"child-process"`, and always on Windows).
+
+The default comes from `task.default_execution_mode` in `omo.json`, which ships as `auto`: the parent session asks the shared daemon ONCE whether it can host children (not Windows, `process_runner: "host"`, and the daemon advertises `session_context` + `generation_handoff`) and uses `process` when it can, `in-process` when it cannot. A per-agent `execution_mode` and an explicit `in-process`/`process` in `omo.json` both win over that check, and curated read-only agents stay in-process either way. When the daemon cannot take the children, the reason is reported once per session and shows up in `task_output` as a `host_unavailable:<reason>` note.
 
 Team members always use process mode. Their child process loads a small member extension that owns the member inbox poller and exposes only team-scoped `task_send`.
 
@@ -49,6 +52,14 @@ Every control/read tool targets a child by id or by name:
 - **`task_cancel`** cancels a child terminally and stops its work.
 
 Parent-initiated cancel returns its result synchronously in the tool response and never fires a completion notification.
+
+## Idle parking and message revival
+
+`task.resident_idle_timeout_ms` controls how long an eligible terminal child stays resident without activity. It defaults to **900000 ms (15 minutes)** and accepts positive safe-integer milliseconds only; `0`, fractions, strings, and disable sentinels are invalid. The idle sweep uses the same interval and does not keep the host process alive. Parking occurs on a sweep at or after `updated_at + resident_idle_timeout_ms`, never before it. A send refreshes `updated_at`; running children and children with pending steering are protected.
+
+Idle in-process children park as `persisted_only`; process children, including team members, park as `rpc_detached`. Their live handle is released, not irreversibly evicted. A direct `task_send` to an eligible parked child's task id restores its recorded transcript and launch contract, admits one new run epoch, and reports revival only after delivery acknowledgment. Admission refusal and uncertain delivery are explicit errors; uncertain messages are not automatically replayed. Killed, cancelled, lost, and one-shot children remain non-continuable. Capacity-driven eviction is unchanged.
+
+Parking is independent of `task.ttl_ms` (record and artifact retention, default 86400000 ms) and `task.resume_children` (session-shutdown behavior). Old output remains readable through `task_output` until record expiration. Team-name sends remain durable mailbox writes: a parked process has no active inbox poller, so use its task id for direct revival or resume the owning session before expecting mailbox delivery.
 
 ## Inspecting children
 
@@ -94,8 +105,9 @@ All defaults live in `omo.json` under `task` and `teams`. A minimal project conf
 // .omo/omo.jsonc
 {
   "task": {
-    "default_execution_mode": "in-process",
+    "default_execution_mode": "auto",
     "reattach_on_reconcile": true,
+    "resident_idle_timeout_ms": 900000,
     "wait": { "default_ms": 90000 }
   }
 }

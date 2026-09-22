@@ -28,7 +28,7 @@ on:
         type: boolean
         default: true
       lazycodex_only:
-        description: "Publish only LazyCodex (lazycodex-ai npm + Codex marketplace + LazyCodex GitHub release) from the base head, without stamping or publishing omo packages. Requires an explicit version."
+        description: "Publish only LazyCodex from the base head, without stamping or publishing omo packages. Requires a reserved version such as 5.0.0-beta.62.lazycodex.1 or 5.0.0-lazycodex.1."
         required: false
         type: boolean
         default: false
@@ -170,6 +170,8 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@v7
+
       - name: Verify trusted publisher for release packages
         env:
           REPO: code-yeongyu/oh-my-openagent
@@ -177,15 +179,6 @@ jobs:
           PUBLISH_LAZYCODEX: ${{ inputs.publish_lazycodex }}
           LAZYCODEX_ONLY: ${{ inputs.lazycodex_only }}
         run: |
-          OIDC_TOKEN=$(curl -sH "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" \
-            | jq -r '.value // empty')
-
-          if [ -z "${OIDC_TOKEN}" ]; then
-            echo "::error::Failed to acquire GitHub OIDC token"
-            exit 1
-          fi
-
           PLATFORMS=(darwin-arm64 darwin-x64 darwin-x64-baseline linux-x64 linux-x64-baseline linux-arm64 linux-x64-musl linux-x64-musl-baseline linux-arm64-musl windows-x64 windows-x64-baseline windows-arm64)
           if [ "${LAZYCODEX_ONLY}" = "true" ]; then
             ALL_PACKAGES=(lazycodex-ai)
@@ -200,45 +193,8 @@ jobs:
             done
           fi
 
-          FAILED=()
-          for pkg in "${ALL_PACKAGES[@]}"; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X POST \
-              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${pkg}" \
-              -H "Authorization: Bearer ${OIDC_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d '{}')
-
-            # npm returns 200 or 201 when trusted publisher is configured (token issued).
-            # 404 means the package has no trusted publisher mapping for this workflow.
-            if [ "${STATUS}" -ge 200 ] && [ "${STATUS}" -lt 300 ]; then
-              echo "OK   ${pkg}"
-            else
-              echo "FAIL ${pkg} (HTTP ${STATUS})"
-              FAILED+=("${pkg}")
-            fi
-          done
-
-          if [ ${#FAILED[@]} -gt 0 ]; then
-            {
-              echo
-              echo "::error::Trusted publisher not configured for ${#FAILED[@]} required package(s)."
-              echo "::error::For omo-ai setup and verification, see docs/reference/omo-ai-publishing.md."
-              echo "::error::Configure each below at the URL with these values:"
-              echo "::error::  Provider: GitHub Actions"
-              echo "::error::  Organization: code-yeongyu"
-              echo "::error::  Repository: ${REPO}"
-              echo "::error::  Workflow filename: ${WORKFLOW_FILE}"
-              echo
-              for pkg in "${FAILED[@]}"; do
-                echo "::error::  https://www.npmjs.com/package/${pkg}/access"
-              done
-            } >&2
-            exit 1
-          fi
-
-          echo
-          echo "All ${#ALL_PACKAGES[@]} packages have trusted publisher configured."
+          # Diagnostic/setup reference: docs/reference/omo-ai-publishing.md
+          node script/preflight-trust.mjs "${ALL_PACKAGES[@]}"
 
       - name: Write job summary
         if: always()
@@ -260,7 +216,7 @@ jobs:
             echo
             echo "### If this fails"
             echo
-            echo "Configure the missing npm trusted publisher or required sync secret before rerunning."
+            echo "Read the first failing package/status diagnostic. Transport, throttling, server errors and ambiguous 404s retry automatically; exhaustion reports the actual error. Only definitive authorization failures print publisher-configuration guidance. Check the sync secret separately if its prerequisite failed."
           } >> "$GITHUB_STEP_SUMMARY"
 
   release-metadata:
@@ -314,24 +270,10 @@ jobs:
             esac
           fi
 
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
-            echo "::error::Invalid version: $VERSION"
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          if [[ "$VERSION" == *"-"* ]]; then
-            DIST_TAG=$(printf '%s' "$VERSION" | cut -d'-' -f2 | cut -d'.' -f1)
-            if ! [[ "$DIST_TAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
-              echo "::error::Invalid dist_tag: $DIST_TAG"
-              exit 1
-            fi
-            echo "dist_tag=${DIST_TAG:-next}" >> "$GITHUB_OUTPUT"
-          else
-            DIST_TAG=""
-            echo "dist_tag=" >> "$GITHUB_OUTPUT"
-          fi
+          # Reject cross-line namespace use before drafting release state or probing npm.
+          METADATA=$(node script/release-version.mjs "$VERSION")
+          printf '%s\n' "$METADATA" >> "$GITHUB_OUTPUT"
+          DIST_TAG=$(printf '%s\n' "$METADATA" | awk -F= '$1 == "dist_tag" { print $2 }')
 
           LAZYCODEX_COMPARE_TAG="${DIST_TAG:-latest}"
           PREVIOUS_LAZYCODEX_VERSION=$(npm view "lazycodex-ai@${LAZYCODEX_COMPARE_TAG}" version 2>/dev/null || true)
@@ -413,6 +355,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+
+      # build-extension.mjs derives its --external list from the runner's builtinModules;
+      # the senpi-compatibility freshness check runs it on node 24, so this job must too, or
+      # the stamped bundle is byte-divergent and rejected as stale (#8329).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
@@ -547,7 +496,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git add CHANGELOG.md package.json packages/omo-native/package.json packages/oh-my-opencode-*/package.json packages/omo-senpi/package.json packages/omo-senpi/plugin/package.json packages/omo-codex/package.json packages/omo-codex/plugin/package.json packages/omo-codex/plugin/package-lock.json packages/omo-codex/plugin/.codex-plugin/plugin.json packages/omo-codex/plugin/components/*/package.json packages/omo-codex/plugin/hooks/*.json packages/omo-codex/plugin/components/*/hooks/hooks.json bun.lock
-          git add -f packages/omo-senpi/plugin/extensions
+          # build-extension.mjs also stamps the version into the agent-toolkit SDK bundle under
+          # plugin/runtime; it must be committed with the extensions or the freshness check
+          # rejects the release commit as stale-output (#8329).
+          git add -f packages/omo-senpi/plugin/extensions packages/omo-senpi/plugin/runtime/agent-toolkit-sdk/sdk.js
           git diff --cached --quiet || git commit -m "release: v${VERSION}"
 
           echo "needs_push=true" >> "$GITHUB_OUTPUT"

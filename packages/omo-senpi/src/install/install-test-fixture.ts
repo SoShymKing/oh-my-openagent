@@ -29,7 +29,7 @@ export async function createPluginFixture(options: { readonly runtime?: boolean 
   await writeFixtureFile(join(pluginPath, "package.json"), JSON.stringify({ name: "@code-yeongyu/omo-senpi" }))
   await writeFixtureFile(join(pluginPath, "extensions", "omo.js"), "export default {}\n")
   await writeFixtureFile(join(pluginPath, "extensions", "omo-task.js"), "export const createTaskComponent = () => ({})\n")
-  await writeFixtureFile(join(pluginPath, "extensions", "omo-agent-toolkit.js"), "export const createAgentToolkitTool = () => ({})\n")
+  await writeFixtureFile(join(pluginPath, "runtime", "agent-toolkit-sdk", "sdk.js"), "export {}\n")
   await writeFixtureFile(join(pluginPath, "extensions", "omo-member.js"), "export default {}\n")
   await writeFixtureFile(join(pluginPath, "extensions", "memory-run-supervisor.mjs"), "export {}\n")
   await writeFixtureFile(join(pluginPath, "extensions", "reflection-persona.md"), "# reflection persona fixture\n")
@@ -42,6 +42,9 @@ export async function createPluginFixture(options: { readonly runtime?: boolean 
   // Credential-gated skill: staged outside pi.skills but still a required payload artifact.
   await writeFixtureFile(join(pluginPath, "skills-conditional", "x-search", "SKILL.md"), "# x-search\n")
   await writeFixtureFile(join(pluginPath, "scripts", "install.mjs"), "#!/usr/bin/env node\n")
+  // The task daemon's launch spec is a required root-level artifact; the installer's integrity
+  // check refuses a payload without it.
+  await writeFixtureFile(join(pluginPath, "daemon-launch-spec.json"), '{"spec_version":1,"core":{"session_runtime":"in-process","multi_session":true,"extensions":["."]},"tunables":{},"env":{}}\n')
   if (options.runtime !== false) {
     const astGrepRuntime = join(pluginPath, "runtime", "ast-grep-mcp", "cli.js")
     await writeFixtureFile(astGrepRuntime, "console.log('ast-grep')\n")

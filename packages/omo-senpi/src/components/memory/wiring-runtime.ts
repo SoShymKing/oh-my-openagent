@@ -143,9 +143,10 @@ export function createMemoryRuntimeWiring(
         : {
             liveSession: () => {
               const live = liveSession()
-              if (live === undefined || hooks.onLiveCompletion === undefined) return live
+              if (live === undefined) return live
               return {
                 ...live,
+                identityContext: identity,
                 onCompletion: (runId: string) => hooks.onLiveCompletion?.(identity.identity, runId),
               }
             },

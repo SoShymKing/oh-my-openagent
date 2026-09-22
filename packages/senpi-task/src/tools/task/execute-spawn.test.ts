@@ -135,10 +135,13 @@ describe("buildTaskExecute spawn", () => {
           agents: {},
           task: {
             default_execution_mode: "process",
+            process_runner: "host",
+            host_engine_policy: "upgrade",
             default_concurrency: 5,
             global_concurrency: 8,
             max_depth: 1,
             residency_max_children: 8,
+            resident_idle_timeout_ms: 900000,
             ttl_ms: 86400000,
             resume_children: true,
             wait: { min_ms: 5000, default_ms: 60000, max_ms: 600000 },

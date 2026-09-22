@@ -2,6 +2,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
+import { resolveReleaseVersion } from "./release-version.mjs"
 
 const workflowPath = new URL("../.github/workflows/publish.yml", import.meta.url)
 // Windows checks YAML out with CRLF, and the byte-pinned markers below are written with LF, so
@@ -28,18 +29,6 @@ interface Workflow {
   jobs?: Record<string, Job>
 }
 
-const DIST_TAG_FIXTURE = `          if [[ "$VERSION" == *"-"* ]]; then
-            DIST_TAG=$(printf '%s' "$VERSION" | cut -d'-' -f2 | cut -d'.' -f1)
-            if ! [[ "$DIST_TAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
-              echo "::error::Invalid dist_tag: $DIST_TAG"
-              exit 1
-            fi
-            echo "dist_tag=\${DIST_TAG:-next}" >> "$GITHUB_OUTPUT"
-          else
-            DIST_TAG=""
-            echo "dist_tag=" >> "$GITHUB_OUTPUT"
-          fi`
-
 function job(name: string): Job {
   const value = workflow.jobs?.[name]
   if (!value) throw new Error(`missing job: ${name}`)
@@ -63,14 +52,6 @@ function mapOmoAiVersion(rootVersion: string): string {
     : `${rootVersion.slice(0, prereleaseIndex)}-0.${rootVersion.slice(prereleaseIndex + 1)}`
 }
 
-function extractDistTagBlock(text: string): string {
-  const start = text.indexOf('          if [[ "$VERSION" == *"-"* ]]; then')
-  const endMarker = '          fi\n\n          LAZYCODEX_COMPARE_TAG='
-  const end = text.indexOf(endMarker, start)
-  if (start < 0 || end < 0) throw new Error("missing DIST_TAG derivation block")
-  return text.slice(start, end + "          fi".length)
-}
-
 describe("omo-ai publish workflow shape", () => {
   test("preserves an explicit prerelease version and derives its beta dist tag", () => {
     // given
@@ -82,8 +63,8 @@ describe("omo-ai publish workflow shape", () => {
 
     // then
     expect(explicitVersionPrecedesBump).toBe(true)
-    expect(versionRun).toContain(String.raw`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$`)
-    expect(versionRun).toContain('DIST_TAG=$(printf \'%s\' "$VERSION" | cut -d\'-\' -f2 | cut -d\'.\' -f1)')
+    expect(versionRun).toContain('METADATA=$(node script/release-version.mjs "$VERSION")')
+    expect(resolveReleaseVersion("5.0.0-beta.62", false)).toEqual({ version: "5.0.0-beta.62", distTag: "beta" })
   })
 
   test("decides the Latest badge from the highest published semver, never from a pre-release flag", () => {
@@ -216,11 +197,15 @@ describe("omo-ai publish workflow shape", () => {
     expect(liveRun).toContain("ETARGET")
   })
 
-  test("keeps trusted publishing unconditional and DIST_TAG derivation byte-pinned", () => {
+  test("keeps trusted publishing unconditional and delegates validated channel metadata", () => {
     const preflightRun = namedStep("preflight-trust", "Verify trusted publisher for release packages").run ?? ""
 
     expect(preflightRun).toContain("ALL_PACKAGES=(oh-my-opencode oh-my-openagent omo-ai)")
     expect(preflightRun).toContain("docs/reference/omo-ai-publishing.md")
-    expect(extractDistTagBlock(workflowText)).toBe(DIST_TAG_FIXTURE)
+    expect(preflightRun).toContain('node script/preflight-trust.mjs "${ALL_PACKAGES[@]}"')
+    const versionRun = namedStep("release-metadata", "Calculate version").run ?? ""
+    expect(versionRun).toContain("DIST_TAG=$(printf '%s\\n' \"$METADATA\" | awk -F= '$1 == \"dist_tag\" { print $2 }')")
+    expect(resolveReleaseVersion("5.0.0", false).distTag).toBe("")
+    expect(resolveReleaseVersion("5.0.0-rc.1", false).distTag).toBe("rc")
   })
 })

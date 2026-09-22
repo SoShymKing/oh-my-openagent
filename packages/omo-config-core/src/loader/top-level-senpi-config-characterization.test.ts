@@ -76,10 +76,13 @@ const EXPECTED_CONFIG = {
   task: {
     default_concurrency: 5,
     global_concurrency: Math.max(8, availableParallelism() * 2),
-    default_execution_mode: "in-process",
+    default_execution_mode: "auto",
+    process_runner: "host",
+    host_engine_policy: "upgrade",
     max_depth: 1,
     residency_max_children: Math.min(16, Math.max(8, availableParallelism() * 2)),
     resume_children: true,
+    resident_idle_timeout_ms: 900000,
     team: {
       max_members: 8,
       max_parallel_members: 4,

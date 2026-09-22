@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { spawnNode } from "./child-process.js"
+import { runDaemonCommand } from "./daemon.js"
 import { runDoctor } from "./doctor.js"
 import { migrateLegacyBunGlobalManifest } from "./legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./agent-dir.js"
@@ -9,7 +11,7 @@ import { detectHarnesses } from "./setup-detect.js"
 import { readSetupSuggestionCache, spawnSetupSuggestionRefresh } from "./setup-detect-cache.js"
 import { printSetupReport } from "./setup-report.js"
 
-const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server"])
+const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server", "host"])
 const selfUpdateTargets = new Set(["self", "senpi", "omo"])
 // Updating extensions or model catalogs is the engine's job; everything else under `update`
 // would try to replace the pinned engine, so the launcher answers it instead.
@@ -145,19 +147,58 @@ function setupSuggestionForLaunch() {
   return cached.suggestion === true
 }
 
+/**
+ * One call into the engine's host CLI. It prints a single JSON line and exits, so the output is
+ * captured rather than inherited - `omo daemon` has to read the engine's answer to turn it into
+ * an exit code, and `spawnSync` is honest about a call that is expected to be this short.
+ */
+export function engineHostCall(engineArgs, options) {
+  const senpi = resolveSenpi()
+  const result = spawnSync(process.execPath, [senpi.cliPath, ...engineArgs], {
+    encoding: "utf8",
+    env: { ...senpiEnvironment(senpi.packageRoot), ...options.env },
+    windowsHide: true,
+  })
+  return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
+}
+
 export async function runLauncher(args = process.argv.slice(2)) {
   migrateLegacyBunGlobalManifest()
   reportLegacyFlatAdoption()
   const command = args[0]
   // The toolkit CLI is no longer part of the Native payload; the loop is driven in-process by the
-  // omo_agent_toolkit tool. Report that plainly instead of failing on a missing file.
+  // eval SDK the extension publishes. Report that plainly instead of failing on a missing file.
   if (command === "ulw-loop") {
-    console.error("omo ulw-loop is unavailable in this build: use the omo_agent_toolkit tool inside a session (Codex keeps the standalone CLI).")
+    console.error('omo ulw-loop is unavailable in this build: use the agent toolkit SDK from an eval js cell: const { agentToolkit } = await import(`${env("OMO_AGENT_TOOLKIT_SDK_ROOT")}/sdk.js`); print(await agentToolkit.status()) (Codex keeps the standalone CLI).')
     process.exitCode = 2
     return
   }
+  // The daemon is the engine's to run; omo only supplies the launch spec, the policy from
+  // omo.json, and an exit code the caller can branch on.
+  if (command === "daemon") {
+    const outcome = runDaemonCommand(args.slice(1), {
+      engine: { run: engineHostCall },
+      pluginRoot: join(packageRoot, "plugin"),
+      agentDir: canonicalAgentDir(),
+      env: process.env,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      platform: process.platform,
+    })
+    // `omo daemon attach <launch args>`: the daemon is reachable, so this becomes a normal launch
+    // whose environment points the engine at the shared socket instead of starting its own.
+    if (typeof outcome === "object") {
+      const senpi = resolveSenpi()
+      await spawnNode(senpi.cliPath, ["--extension", join(packageRoot, "plugin"), ...outcome.args], {
+        env: { ...senpiEnvironment(senpi.packageRoot), ...outcome.env },
+      })
+      return
+    }
+    process.exitCode = outcome
+    return
+  }
   if (command === "doctor") {
-    runDoctor(await detectHarnesses(), args.slice(1))
+    runDoctor(await detectHarnesses(), args.slice(1), { daemonEngine: { run: engineHostCall } })
     return
   }
   if (command === "setup") {
