@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mergeParentWakeNotifications } from "./parent-wake-dedupe"
+import { isRedundantParentWake, mergeParentWakeNotifications } from "./parent-wake-dedupe"
 
 describe("mergeParentWakeNotifications", () => {
   test("#given distinct final background wake notifications #when the newer final is merged #then both final summaries are preserved", () => {
@@ -36,5 +36,24 @@ describe("mergeParentWakeNotifications", () => {
 
     // then
     expect(notifications).toEqual([finalNotification, bodyMentionsProgress])
+  })
+})
+
+describe("isRedundantParentWake", () => {
+  test("#given identical notifications for distinct children #when compared #then the new child wake is not redundant", () => {
+    const base = {
+      promptContext: { agent: "sisyphus" },
+      notifications: ["same wake"],
+      shouldReply: true,
+    }
+
+    expect(isRedundantParentWake(
+      { ...base, childSessionIDs: ["ses_child_b"] },
+      { ...base, childSessionIDs: ["ses_child_a"] },
+    )).toBe(false)
+    expect(isRedundantParentWake(
+      { ...base, childSessionIDs: ["ses_child_a"] },
+      { ...base, childSessionIDs: ["ses_child_a", "ses_child_b"] },
+    )).toBe(true)
   })
 })

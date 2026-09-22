@@ -13,8 +13,10 @@ const PROGRESS_WAKE = "<system-reminder>\n[BACKGROUND TASK RESULT READY]\n**ID:*
 function createNotifier(): {
   readonly notifier: ParentWakeNotifier
   readonly promptAsyncCalls: PromptAsyncCall[]
+  readonly handoffs: Array<{ childSessionIDs: readonly string[]; confirmedAt: number }>
 } {
   const promptAsyncCalls: PromptAsyncCall[] = []
+  const handoffs: Array<{ childSessionIDs: readonly string[]; confirmedAt: number }> = []
   const client: ParentWakeNotifierClientForTest = {
     session: {
       messages: async () => ({
@@ -33,6 +35,7 @@ function createNotifier(): {
   }
 
   return {
+    handoffs,
     promptAsyncCalls,
     notifier: new ParentWakeNotifier(
       {
@@ -40,6 +43,9 @@ function createNotifier(): {
         directory: "/tmp/test-omo",
         enqueueNotificationForParent: async (_sessionID, operation) => {
           await operation()
+        },
+        onHandoffConfirmed: (childSessionIDs, confirmedAt) => {
+          handoffs.push({ childSessionIDs, confirmedAt })
         },
       },
       {
@@ -106,6 +112,26 @@ describe("ParentWakeNotifier final notification merge", () => {
       const notificationText = getPromptText(promptAsyncCalls[0])
       expect(countOccurrences(notificationText, "[ALL BACKGROUND TASKS COMPLETE]")).toBe(1)
       expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+    } finally {
+      notifier.shutdown()
+      releaseAllPromptAsyncReservationsForTesting()
+    }
+  })
+
+  test("#given coalesced final wakes for distinct children #when flushed #then every child handoff is confirmed", async () => {
+    const { notifier, handoffs } = createNotifier()
+    const sessionID = "parent-final-child-handoffs"
+    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true, undefined, "ses_child_a")
+    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true, undefined, "ses_child_b")
+
+    try {
+      expect(notifier.getPendingParentWakes().get(sessionID)?.childSessionIDs).toEqual(["ses_child_a", "ses_child_b"])
+
+      await notifier.flushPendingParentWake(sessionID)
+
+      expect(handoffs).toHaveLength(1)
+      expect(handoffs[0]?.childSessionIDs).toEqual(["ses_child_a", "ses_child_b"])
+      expect(handoffs[0]?.confirmedAt).toBeNumber()
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()
