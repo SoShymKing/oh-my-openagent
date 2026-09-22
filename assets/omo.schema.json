@@ -11337,6 +11337,9 @@
         "background_task": {
           "type": "object",
           "properties": {
+            "autoDelete": {
+              "type": "boolean"
+            },
             "defaultConcurrency": {
               "type": "number",
               "minimum": 0
@@ -26805,6 +26808,9 @@
               "background_task": {
                 "type": "object",
                 "properties": {
+                  "autoDelete": {
+                    "type": "boolean"
+                  },
                   "defaultConcurrency": {
                     "type": "number",
                     "minimum": 0
