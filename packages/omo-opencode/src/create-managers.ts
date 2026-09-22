@@ -18,6 +18,10 @@ import {
 } from "./features/tmux-subagent"
 import * as openclawRuntimeDispatch from "./openclaw/runtime-dispatch"
 import { registerManagerForCleanup } from "./features/background-agent/process-cleanup"
+import {
+  reconcilePersistedSessionRetention,
+  sessionOperationLeases,
+} from "./features/background-agent/session-retention"
 import { createConfigHandler } from "./plugin-handlers"
 import { log } from "./shared"
 import { markServerRunningInProcess } from "./shared/tmux/tmux-utils/server-health"
@@ -34,6 +38,7 @@ type CreateManagersDeps = {
   cleanupSessionTeamRunsFn: typeof cleanupSessionTeamRuns
   createConfigHandlerFn: typeof createConfigHandler
   markServerRunningInProcessFn: typeof markServerRunningInProcess
+  reconcilePersistedSessionRetentionFn: typeof reconcilePersistedSessionRetention
 }
 
 const defaultCreateManagersDeps: CreateManagersDeps = {
@@ -47,6 +52,7 @@ const defaultCreateManagersDeps: CreateManagersDeps = {
   cleanupSessionTeamRunsFn: cleanupSessionTeamRuns,
   createConfigHandlerFn: createConfigHandler,
   markServerRunningInProcessFn: markServerRunningInProcess,
+  reconcilePersistedSessionRetentionFn: reconcilePersistedSessionRetention,
 }
 
 export type Managers = {
@@ -194,6 +200,19 @@ export function createManagers(args: {
     },
     enableParentSessionNotifications: backgroundNotificationHookEnabled,
     modelFallbackControllerAccessor,
+  })
+
+  void deps.reconcilePersistedSessionRetentionFn({
+    client: ctx.client,
+    leases: sessionOperationLeases,
+    autoDelete: pluginConfig.background_task?.autoDelete !== false,
+    directory: ctx.directory,
+  }).then((report) => {
+    if (report.deleted > 0 || report.missing > 0) {
+      log("[create-managers] session retention reconciliation complete", report)
+    }
+  }).catch((error) => {
+    log("[create-managers] session retention reconciliation failed", { error: String(error) })
   })
 
   if (pluginConfig.tui?.sidebar?.enabled !== false) {
