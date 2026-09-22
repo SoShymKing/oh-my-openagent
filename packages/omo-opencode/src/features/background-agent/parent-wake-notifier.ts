@@ -111,8 +111,9 @@ export class ParentWakeNotifier {
     promptContext: ParentWakePromptContext,
     shouldReply: boolean,
     delayMs?: number,
+    childSessionID?: string,
   ): void {
-    this.pendingQueue.queueWake(sessionID, notification, promptContext, shouldReply)
+    this.pendingQueue.queueWake(sessionID, notification, promptContext, shouldReply, childSessionID)
     this.schedulePendingParentWakeFlush(sessionID, delayMs)
   }
 
