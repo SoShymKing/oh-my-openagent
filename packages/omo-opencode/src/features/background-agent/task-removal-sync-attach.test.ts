@@ -158,7 +158,7 @@ describe("BackgroundManager.scheduleTaskRemoval with an attached sync continuati
       expect(deleteCalls).toEqual([])
     })
 
-    test("#when the sync continuation detaches #then a fresh cleanup timer is armed and firing it removes the task and deletes the session once", async () => {
+    test("#when the sync continuation detaches #then a fresh cleanup timer is armed and firing it removes only the task", async () => {
       // given
       const { manager, deleteCalls } = createManager()
       managerUnderTest = manager
@@ -183,7 +183,7 @@ describe("BackgroundManager.scheduleTaskRemoval with an attached sync continuati
       // then
       expect(getTasks(manager).has(task.id)).toBe(false)
       expect(manager.findBySession("ses_child")).toBeUndefined()
-      expect(deleteCalls).toEqual(["ses_child"])
+      expect(deleteCalls).toEqual([])
     })
 
     test("#when the sync continuation detaches before the timer fires #then the pending timer is left alone", async () => {
@@ -208,7 +208,7 @@ describe("BackgroundManager.scheduleTaskRemoval with an attached sync continuati
 
       // then
       expect(getTasks(manager).has(task.id)).toBe(false)
-      expect(deleteCalls).toEqual(["ses_child"])
+      expect(deleteCalls).toEqual([])
     })
   })
 
