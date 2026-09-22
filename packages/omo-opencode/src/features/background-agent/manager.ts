@@ -4,6 +4,7 @@ import type { BackgroundTaskConfig, TmuxConfig } from "../../config/schema"
 import type { ModelFallbackControllerAccessor } from "../../hooks/model-fallback"
 import {
   dispatchInternalPrompt,
+  releasePromptAsyncReservation,
   type PromptAsyncGateResult,
 } from "../../hooks/shared/prompt-async-gate"
 import { isSessionActive as isOpenCodeSessionActive } from "../../hooks/shared/session-idle-settle"
@@ -87,6 +88,12 @@ import {
   MIN_SESSION_GONE_POLLS,
   verifySessionExists as verifySessionStillExists,
 } from "./session-existence"
+import {
+  readSessionRetentionCheckpoint,
+  sessionOperationLeases,
+  type SessionRetentionCheckpoint,
+  writeSessionRetentionCheckpoint,
+} from "./session-retention"
 import { handleSessionIdleBackgroundEvent } from "./session-idle-event-handler"
 import {
   hasOutputSignalFromPart,
@@ -286,6 +293,9 @@ export class BackgroundManager {
   private cachedCircuitBreakerSettings?: CircuitBreakerSettings
   private readonly scheduledFlushSettledCounts = new Map<string, number>()
   private readonly scheduledFlushSettledWaiters = new Map<string, Array<() => void>>()
+  private readonly sessionRetentionCheckpoints = new Map<string, SessionRetentionCheckpoint>()
+  private readonly persistedSessionRetentionCheckpoints = new Map<string, string>()
+  private sessionRetentionWriteChain: Promise<void> = Promise.resolve()
 
   constructor(config: BackgroundManagerConfig) {
     const { pluginContext, ...options } = config
@@ -314,6 +324,7 @@ export class BackgroundManager {
         enqueueNotificationForParent: this.enqueueNotificationForParent.bind(this),
         onPendingWakeRequeued: (sessionID) => this.updateBackgroundTaskMarker(sessionID),
         onScheduledFlushSettled: (sessionID) => this.recordScheduledFlushSettled(sessionID),
+        onHandoffConfirmed: (sessionIDs, confirmedAt) => this.confirmBackgroundSessionHandoffs(sessionIDs, confirmedAt),
       },
       {
         pendingRetryMs: PENDING_PARENT_WAKE_RETRY_MS,
@@ -343,6 +354,182 @@ export class BackgroundManager {
       })
       return false
     }
+  }
+
+  private buildBackgroundSessionRetentionCheckpoint(
+    task: BackgroundTask,
+    input?: {
+      sessionID?: string
+      terminalStatus?: SessionRetentionCheckpoint["terminalStatus"]
+      terminalAt?: number
+      model?: SessionRetentionCheckpoint["model"]
+      resetLifecycle?: boolean
+    },
+  ): SessionRetentionCheckpoint | undefined {
+    const sessionID = input?.sessionID ?? task.sessionId
+    if (!sessionID) return undefined
+
+    const existing = this.sessionRetentionCheckpoints.get(sessionID)
+    const model = input?.model ?? (task.model
+      ? {
+          providerID: task.model.providerID,
+          modelID: task.model.modelID,
+          ...(task.model.variant ? { variant: task.model.variant } : {}),
+        }
+      : undefined)
+    const terminalStatus = input?.resetLifecycle === true ? undefined : input?.terminalStatus ?? (
+      TERMINAL_BACKGROUND_TASK_STATUSES.has(task.status)
+        ? task.status as SessionRetentionCheckpoint["terminalStatus"]
+        : undefined
+    )
+    const terminalAt = input?.resetLifecycle === true
+      ? undefined
+      : terminalStatus === undefined
+        ? existing?.terminalAt
+        : existing?.terminalAt ?? input?.terminalAt ?? task.completedAt?.getTime() ?? Date.now()
+
+    return {
+      version: 1,
+      mode: "background",
+      sessionID,
+      taskID: task.id,
+      parentSessionID: task.parentSessionId,
+      parentMessageID: task.parentMessageId,
+      agent: task.agent,
+      autoDelete: existing?.autoDelete ?? this.config?.autoDelete !== false,
+      ...(model === undefined ? {} : { model }),
+      ...(task.category === undefined ? {} : { category: task.category }),
+      ...(terminalStatus === undefined ? {} : { terminalStatus }),
+      ...(terminalAt === undefined ? {} : { terminalAt }),
+      ...(input?.resetLifecycle === true || existing?.handoffConfirmedAt === undefined
+        ? {}
+        : { handoffConfirmedAt: existing.handoffConfirmedAt }),
+    }
+  }
+
+  private async persistBackgroundSessionRetentionCheckpoint(
+    checkpoint: SessionRetentionCheckpoint | undefined,
+  ): Promise<void> {
+    if (!checkpoint) return
+
+    this.sessionRetentionCheckpoints.set(checkpoint.sessionID, checkpoint)
+    const write = this.sessionRetentionWriteChain.then(async () => {
+      const latest = this.sessionRetentionCheckpoints.get(checkpoint.sessionID)
+      if (!latest) return
+      const serialized = JSON.stringify(latest)
+      if (this.persistedSessionRetentionCheckpoints.get(checkpoint.sessionID) === serialized) return
+
+      try {
+        const accepted = await writeSessionRetentionCheckpoint(this.client, latest, this.directory)
+        if (accepted) {
+          this.persistedSessionRetentionCheckpoints.set(checkpoint.sessionID, serialized)
+        } else {
+          log("[background-agent] Session retention checkpoint was not accepted:", {
+            sessionID: checkpoint.sessionID,
+          })
+        }
+      } catch (error) {
+        log("[background-agent] Failed to persist session retention checkpoint:", {
+          sessionID: checkpoint.sessionID,
+          error: String(error),
+        })
+      }
+    })
+    this.sessionRetentionWriteChain = write
+    await write
+  }
+
+  private async persistTaskRetentionCheckpoint(task: BackgroundTask): Promise<void> {
+    await this.persistBackgroundSessionRetentionCheckpoint(
+      this.buildBackgroundSessionRetentionCheckpoint(task),
+    )
+  }
+
+  private async persistAttemptRetentionCheckpoint(task: BackgroundTask, sessionID: string): Promise<void> {
+    const attempt = findAttemptBySession(task, sessionID)
+    if (!attempt || !TERMINAL_BACKGROUND_TASK_STATUSES.has(attempt.status)) return
+
+    await this.persistBackgroundSessionRetentionCheckpoint(
+      this.buildBackgroundSessionRetentionCheckpoint(task, {
+        sessionID,
+        terminalStatus: attempt.status as SessionRetentionCheckpoint["terminalStatus"],
+        terminalAt: attempt.completedAt?.getTime(),
+        model: attempt.providerId && attempt.modelId
+          ? {
+              providerID: attempt.providerId,
+              modelID: attempt.modelId,
+              ...(attempt.variant ? { variant: attempt.variant } : {}),
+            }
+          : undefined,
+      }),
+    )
+  }
+
+  private async confirmBackgroundSessionHandoffs(
+    sessionIDs: readonly string[],
+    confirmedAt: number,
+  ): Promise<void> {
+    await Promise.all(sessionIDs.map(async (sessionID) => {
+      const checkpoint = this.sessionRetentionCheckpoints.get(sessionID)
+      if (!checkpoint) {
+        log("[background-agent] Missing session retention checkpoint for accepted handoff:", { sessionID })
+        return
+      }
+
+      await this.persistBackgroundSessionRetentionCheckpoint({
+        ...checkpoint,
+        handoffConfirmedAt: checkpoint.handoffConfirmedAt ?? confirmedAt,
+      })
+    }))
+  }
+
+  private async recoverBackgroundTaskFromSession(sessionID: string): Promise<BackgroundTask | undefined> {
+    const read = await readSessionRetentionCheckpoint(this.client, sessionID, this.directory)
+    if (read.status !== "checkpoint") return undefined
+
+    const checkpoint = read.checkpoint
+    if (
+      checkpoint.mode !== "background"
+      || checkpoint.sessionID !== sessionID
+      || checkpoint.taskID === undefined
+      || checkpoint.parentSessionID === undefined
+      || checkpoint.parentMessageID === undefined
+      || checkpoint.agent === undefined
+      || checkpoint.terminalStatus === undefined
+      || checkpoint.terminalAt === undefined
+    ) {
+      return undefined
+    }
+
+    const cachedTask = this.completedTaskArchive.get(checkpoint.taskID)
+      ?? getRegisteredBackgroundTask(checkpoint.taskID)
+    if (cachedTask?.sessionId !== undefined && cachedTask.sessionId !== sessionID) return undefined
+
+    const task: BackgroundTask = {
+      ...(cachedTask ?? {
+        id: checkpoint.taskID,
+        description: checkpoint.taskID,
+        prompt: "[redacted]",
+      }),
+      id: checkpoint.taskID,
+      sessionId: sessionID,
+      parentSessionId: checkpoint.parentSessionID,
+      parentMessageId: checkpoint.parentMessageID,
+      agent: checkpoint.agent,
+      model: checkpoint.model,
+      category: checkpoint.category,
+      status: checkpoint.terminalStatus,
+      completedAt: new Date(checkpoint.terminalAt),
+      concurrencyKey: undefined,
+      concurrencyGroup: checkpoint.model
+        ? `${checkpoint.model.providerID}/${checkpoint.model.modelID}`
+        : checkpoint.agent,
+    }
+
+    this.sessionRetentionCheckpoints.set(sessionID, checkpoint)
+    this.persistedSessionRetentionCheckpoints.set(sessionID, JSON.stringify(checkpoint))
+    this.addTask(task)
+    return task
   }
 
   async assertCanSpawn(parentSessionID: string): Promise<SubagentSpawnContext> {
@@ -727,6 +914,7 @@ export class BackgroundManager {
             item.task.error = error instanceof Error ? error.message : String(error)
             item.task.completedAt = new Date()
           }
+          void this.persistTaskRetentionCheckpoint(item.task)
 
           if (item.task.concurrencyKey) {
             this.concurrencyManager.release(item.task.concurrencyKey)
@@ -1030,6 +1218,7 @@ The fallback retry session is now created and can be inspected directly.
           existingTask.error = terminalError
           existingTask.completedAt = new Date()
         }
+        void this.persistTaskRetentionCheckpoint(existingTask)
         if (existingTask.rootSessionId) {
           this.unregisterRootDescendant(existingTask.rootSessionId)
         }
@@ -1050,7 +1239,7 @@ The fallback retry session is now created and can be inspected directly.
           log("[background-agent] Failed to notify on error:", err)
         })
       }
-    })
+    }).then(() => this.persistTaskRetentionCheckpoint(task))
 
     invokeTmuxSessionCreatedCallback({
       callback: this.onSubagentSessionCreated,
@@ -1065,6 +1254,10 @@ The fallback retry session is now created and can be inspected directly.
 
   getTask(id: string): BackgroundTask | undefined {
     return this.tasks.get(id) ?? this.completedTaskArchive.get(id) ?? getRegisteredBackgroundTask(id)
+  }
+
+  async confirmBackgroundOutputHandoff(sessionID: string, confirmedAt = Date.now()): Promise<void> {
+    await this.confirmBackgroundSessionHandoffs([sessionID], confirmedAt)
   }
 
   getTasksSnapshot(): BackgroundTaskSnapshot[] { return toBackgroundTaskSnapshots(this.tasks.values()) }
@@ -1325,7 +1518,11 @@ The fallback retry session is now created and can be inspected directly.
   }
 
   async resume(input: ResumeInput): Promise<BackgroundTask> {
+    const releaseSessionLease = sessionOperationLeases.acquire(input.sessionId)
+    let releaseAfterDispatch = false
+    try {
     const existingTask = this.findBySession(input.sessionId)
+      ?? await this.recoverBackgroundTaskFromSession(input.sessionId)
     if (!existingTask) {
       throw new Error(`Task not found for session: ${input.sessionId}`)
     }
@@ -1377,6 +1574,9 @@ The fallback retry session is now created and can be inspected directly.
       countedToolPartIDs: existingTask.progress?.countedToolPartIDs,
       lastUpdate: new Date(),
     }
+    const resumedRetentionCheckpoint = this.buildBackgroundSessionRetentionCheckpoint(existingTask, {
+      resetLifecycle: true,
+    })
 
     this.startPolling()
     if (existingTask.sessionId) {
@@ -1422,6 +1622,9 @@ The fallback retry session is now created and can be inspected directly.
       applySessionPromptParams(existingTask.sessionId!, existingTask.model)
     }
 
+    releasePromptAsyncReservation(existingTask.sessionId, "background-agent-resume", {
+      reservedBy: "session-retention-checkpoint",
+    })
     dispatchInternalPrompt({
       mode: "async",
       client: this.client,
@@ -1451,9 +1654,10 @@ The fallback retry session is now created and can be inspected directly.
         },
         query: { directory: existingTask.cwd ?? this.directory },
       },
-    }).then((promptResult) => {
+    }).then(async (promptResult) => {
       if (promptResult.status === "failed") {
         if (isAmbiguousPostDispatchPromptFailure(promptResult)) {
+          await this.persistBackgroundSessionRetentionCheckpoint(resumedRetentionCheckpoint)
           log("[background-agent] resume prompt may have been accepted before ambiguous failure; continuing to poll", {
             taskId: existingTask.id,
             sessionID: existingTask.sessionId,
@@ -1464,6 +1668,7 @@ The fallback retry session is now created and can be inspected directly.
         throw promptResult.error
       }
       if (promptResult.status === "queued") {
+        await this.persistBackgroundSessionRetentionCheckpoint(resumedRetentionCheckpoint)
         log("[background-agent] resume prompt queued by prompt dispatcher:", {
           taskId: existingTask.id,
           sessionID: existingTask.sessionId,
@@ -1478,7 +1683,9 @@ The fallback retry session is now created and can be inspected directly.
           status: promptResult.status,
         })
         this.restoreTaskAfterSkippedResume(existingTask, resumeSnapshot, promptResult.status)
+        return
       }
+      await this.persistBackgroundSessionRetentionCheckpoint(resumedRetentionCheckpoint)
     }).catch(async (error) => {
       log("[background-agent] resume prompt error:", error)
       const errorInfo = {
@@ -1494,6 +1701,7 @@ The fallback retry session is now created and can be inspected directly.
       const errorMessage = errorInfo.message ?? (error instanceof Error ? error.message : String(error))
       existingTask.error = errorMessage
       existingTask.completedAt = new Date()
+      await this.persistTaskRetentionCheckpoint(existingTask)
       if (existingTask.rootSessionId) {
         this.unregisterRootDescendant(existingTask.rootSessionId)
       }
@@ -1517,9 +1725,16 @@ The fallback retry session is now created and can be inspected directly.
       this.enqueueNotificationForParent(existingTask.parentSessionId, () => this.notifyParentSession(existingTask)).catch(err => {
         log("[background-agent] Failed to notify on resume error:", err)
       })
+    }).finally(() => {
+      releaseSessionLease()
     })
+    releaseAfterDispatch = true
 
     return existingTask
+    } catch (error) {
+      if (!releaseAfterDispatch) releaseSessionLease()
+      throw error
+    }
   }
 
   private async checkSessionTodos(sessionID: string): Promise<boolean> {
@@ -1997,6 +2212,7 @@ The fallback retry session is now created and can be inspected directly.
       task.error = errorMessage
       task.completedAt = new Date()
     }
+    void this.persistTaskRetentionCheckpoint(task)
 
     if (task.rootSessionId) {
       this.unregisterRootDescendant(task.rootSessionId)
@@ -2120,6 +2336,7 @@ The fallback retry session is now created and can be inspected directly.
       task.error = errorMsg
       task.completedAt = new Date()
     }
+    void this.persistTaskRetentionCheckpoint(task)
     if (task.rootSessionId) {
       this.unregisterRootDescendant(task.rootSessionId)
     }
@@ -2200,6 +2417,9 @@ The task was re-queued on a fallback model after a retryable failure.
       },
     })
     const retried = await result
+    if (retried && previousSessionID) {
+      void this.persistAttemptRetentionCheckpoint(task, previousSessionID)
+    }
     if (retried && retryingNotification) {
       const parentPromptContext = await this.resolveParentWakePromptContext(task)
       this.queuePendingParentWake(
@@ -2208,6 +2428,7 @@ The task was re-queued on a fallback model after a retryable failure.
         parentPromptContext,
         false,
         PENDING_PARENT_WAKE_DEBOUNCE_MS,
+        previousSessionID,
       )
     }
     if (retried && previousSessionID) {
@@ -2355,7 +2576,7 @@ The task was re-queued on a fallback model after a retryable failure.
       this.completionTimers.delete(taskId)
     }
 
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       this.completionTimers.delete(taskId)
       const task = this.tasks.get(taskId)
       if (!task) return
@@ -2383,12 +2604,6 @@ The task was re-queued on a fallback model after a retryable failure.
         subagentSessions.delete(task.sessionId)
         clearDelegatedChildSessionBootstrap(task.sessionId)
         SessionCategoryRegistry.remove(task.sessionId)
-        const deleteSession = this.client.session.delete?.bind(this.client.session)
-        if (typeof deleteSession === "function") {
-          await deleteSession({ path: { id: task.sessionId } }).catch((error: unknown) => {
-            log("[background-agent] Failed to delete completed subagent session:", { sessionID: task.sessionId, error: String(error) })
-          })
-        }
       }
       log("[background-agent] Removed completed task from memory:", taskId)
     }, this.config?.taskCleanupDelayMs ?? TASK_CLEANUP_DELAY_MS)
@@ -2444,6 +2659,7 @@ The task was re-queued on a fallback model after a retryable failure.
         task.error = reason
       }
     }
+    void this.persistTaskRetentionCheckpoint(task)
     if (wasRunning && task.rootSessionId) {
       this.unregisterRootDescendant(task.rootSessionId)
     }
@@ -2575,6 +2791,7 @@ The task was re-queued on a fallback model after a retryable failure.
         task.status = "completed"
         task.completedAt = new Date()
       }
+      void this.persistTaskRetentionCheckpoint(task)
       this.taskHistory.record(task.parentSessionId, { id: task.id, sessionID: task.sessionId, agent: task.agent, description: task.description, status: "completed", category: task.category, startedAt: task.startedAt, completedAt: task.completedAt })
 
       if (task.rootSessionId) {
@@ -2725,6 +2942,7 @@ The task was re-queued on a fallback model after a retryable failure.
             parentPromptContext,
             shouldReply,
             PENDING_PARENT_WAKE_DEBOUNCE_MS,
+            task.sessionId,
           )
           log("[background-agent] Queued notification while parent session is active:", {
             taskId: task.id,
@@ -2739,6 +2957,7 @@ The task was re-queued on a fallback model after a retryable failure.
             parentPromptContext,
             shouldReply,
             PENDING_PARENT_WAKE_DEBOUNCE_MS,
+            task.sessionId,
           )
           log("[background-agent] Queued notification for short-debounce flush to idle parent:", {
             taskId: task.id,
@@ -2875,8 +3094,9 @@ The task was re-queued on a fallback model after a retryable failure.
     promptContext: ParentWakePromptContext,
     shouldReply: boolean,
     delayMs?: number,
+    childSessionID?: string,
   ): void {
-    this.parentWakeNotifier.queuePendingParentWake(sessionID, notification, promptContext, shouldReply, delayMs)
+    this.parentWakeNotifier.queuePendingParentWake(sessionID, notification, promptContext, shouldReply, delayMs, childSessionID)
     this.updateBackgroundTaskMarker(sessionID)
   }
 
@@ -2907,6 +3127,7 @@ The task was re-queued on a fallback model after a retryable failure.
         task.status = "error"
         task.error = errorMessage
         task.completedAt = new Date()
+        void this.persistTaskRetentionCheckpoint(task)
         if (!wasPending && task.rootSessionId) {
           this.unregisterRootDescendant(task.rootSessionId)
         }
@@ -2963,6 +3184,10 @@ The task was re-queued on a fallback model after a retryable failure.
       concurrencyManager: this.concurrencyManager,
       notifyParentSession: (task) => this.enqueueNotificationForParent(task.parentSessionId, () => this.notifyParentSession(task)),
       sessionStatuses: allStatuses,
+      onTaskInterrupted: (task) => {
+        removeTaskToastTracking(task.id)
+        void this.persistTaskRetentionCheckpoint(task)
+      },
     })
   }
 
@@ -2978,6 +3203,7 @@ The task was re-queued on a fallback model after a retryable failure.
       task.error = errorMessage
       task.completedAt = new Date()
     }
+    void this.persistTaskRetentionCheckpoint(task)
     if (task.rootSessionId) {
       this.unregisterRootDescendant(task.rootSessionId)
     }
