@@ -3,11 +3,17 @@ import type { DelegateTaskArgs, ToolContextWithMetadata } from "./types"
 import type { ExecutorContext, ParentContext, SessionMessage } from "./executor-types"
 import { getDeliverableTag, isPlanFamily } from "./constants"
 import { handedBackSyncSessions } from "../../features/claude-code-session-state"
+import {
+  parseSessionRetentionCheckpoint,
+  SESSION_RETENTION_METADATA_KEY,
+  type SessionRetentionCheckpoint,
+} from "../../features/background-agent/session-retention"
 import { publishToolMetadata } from "../../features/tool-metadata-store"
 import { getTaskToastManager } from "../../features/task-toast-manager"
 import { getAgentToolRestrictions } from "../../shared/agent-tool-restrictions"
 import { getMessageDir, normalizeSDKResponse } from "../../shared"
 import { promptWithModelSuggestionRetry } from "../../shared/model-suggestion-retry"
+import { releasePromptAsyncReservation } from "../../shared/prompt-async-gate"
 import { resolveMessageContext } from "../../features/hook-message-injector"
 import { formatDuration } from "./time-formatter"
 import { syncContinuationDeps, type SyncContinuationDeps } from "./sync-continuation-deps"
@@ -17,7 +23,11 @@ import { buildTaskMetadataBlock } from "../../features/tool-metadata-store/task-
 import { getTaskID } from "./task-id"
 import { resolveMetadataModel } from "./resolve-metadata-model"
 import { log } from "../../shared/logger"
-import { cancelSyncSessionDeletion, scheduleSyncSessionDeletion } from "./sync-session-cleanup"
+import {
+  acquireSyncSessionLease,
+  recordSyncSessionRetentionCheckpoint,
+  scheduleSyncSessionDeletion,
+} from "./sync-session-cleanup"
 import { getSessionNotFoundError, isSessionNotFoundPollError } from "./session-not-found-error"
 
 type ResumeModel = { providerID: string; modelID: string }
@@ -28,6 +38,7 @@ type ResumeContext = {
   resumeVariant?: string
   anchorMessageCount?: number
   anchorMessageID?: string
+  retentionCheckpoint?: SessionRetentionCheckpoint
 }
 
 function shouldAttemptPollErrorRecovery(pollError: string): boolean {
@@ -83,6 +94,16 @@ async function resolveResumeContext(
   if (missingSession) throw missingSession
   if (isRecord(messagesResp) && messagesResp.error != null) throw messagesResp.error
   const messages = normalizeSDKResponse(messagesResp, [] as SessionMessage[])
+  let retentionCheckpoint: SessionRetentionCheckpoint | undefined
+  for (let index = messages.length - 1; index >= 0 && retentionCheckpoint === undefined; index--) {
+    const parts = messages[index].parts ?? []
+    for (let partIndex = parts.length - 1; partIndex >= 0; partIndex--) {
+      const metadata = parts[partIndex].metadata
+      if (!metadata || !Object.hasOwn(metadata, SESSION_RETENTION_METADATA_KEY)) continue
+      retentionCheckpoint = parseSessionRetentionCheckpoint(metadata[SESSION_RETENTION_METADATA_KEY])
+      break
+    }
+  }
 
   for (let index = messages.length - 1; index >= 0; index--) {
     const info = messages[index].info
@@ -95,11 +116,16 @@ async function resolveResumeContext(
         resumeVariant: info.variant,
         anchorMessageCount: messages.length,
         anchorMessageID: messages.at(-1)?.info?.id,
+        retentionCheckpoint,
       }
     }
   }
 
-  return { anchorMessageCount: messages.length, anchorMessageID: messages.at(-1)?.info?.id }
+  return {
+    anchorMessageCount: messages.length,
+    anchorMessageID: messages.at(-1)?.info?.id,
+    retentionCheckpoint,
+  }
 }
 
 export async function executeSyncContinuation(
@@ -116,7 +142,7 @@ export async function executeSyncContinuation(
   if (!continuationID) {
     throw new Error("task_id is required to continue a sync task")
   }
-  cancelSyncSessionDeletion(continuationID)
+  const releaseRetentionLease = acquireSyncSessionLease(continuationID)
   const detachFromManager = executorCtx.manager?.attachSyncContinuation?.(continuationID)
   const taskId = `resume_sync_${continuationID.slice(0, 8)}`
   const startTime = new Date()
@@ -136,6 +162,31 @@ export async function executeSyncContinuation(
   let anchorMessageCount: number | undefined
   let anchorMessageID: string | undefined
   let handedBackToParent = false
+  let retentionHandoffConfirmed = false
+  let retentionTerminalStatus: SessionRetentionCheckpoint["terminalStatus"] = "error"
+  let retentionCheckpoint: SessionRetentionCheckpoint | undefined
+  let retentionFinalized = false
+
+  const finalizeRetention = async (): Promise<void> => {
+    if (retentionFinalized) return
+    retentionFinalized = true
+    if (retentionCheckpoint) {
+      const terminalAt = Date.now()
+      retentionCheckpoint = {
+        ...retentionCheckpoint,
+        terminalStatus: retentionTerminalStatus,
+        terminalAt,
+        ...(retentionHandoffConfirmed ? { handoffConfirmedAt: terminalAt } : {}),
+      }
+      await recordSyncSessionRetentionCheckpoint(
+        client,
+        retentionCheckpoint,
+        executorCtx.directory,
+      )
+    }
+    releaseRetentionLease()
+    scheduleSyncSessionDeletion(client, continuationID, executorCtx.directory)
+  }
 
   try {
     const resumeContext = await resolveResumeContext(client, continuationID)
@@ -148,7 +199,27 @@ export async function executeSyncContinuation(
     const resumeModelForMetadata = resumeModel && resumeVariant !== undefined
       ? { ...resumeModel, variant: resumeVariant }
       : resumeModel
-
+    const previousCheckpoint = resumeContext.retentionCheckpoint?.mode === "sync"
+      ? resumeContext.retentionCheckpoint
+      : undefined
+    const retentionModel = resumeModelForMetadata ?? previousCheckpoint?.model
+    const retentionAgent = resumeAgent ?? previousCheckpoint?.agent
+    const retentionCategory = args.category ?? previousCheckpoint?.category
+    retentionCheckpoint = {
+      version: 1,
+      mode: "sync",
+      sessionID: continuationID,
+      taskID: previousCheckpoint?.taskID ?? continuationID,
+      parentSessionID: parentContext.sessionID,
+      parentMessageID: parentContext.messageID,
+      ...(retentionAgent === undefined ? {} : { agent: retentionAgent }),
+      ...(retentionModel === undefined ? {} : { model: retentionModel }),
+      ...(retentionCategory === undefined ? {} : { category: retentionCategory }),
+      autoDelete: previousCheckpoint?.autoDelete === false
+        || executorCtx.autoDeleteSubagentSessions === false
+        ? false
+        : true,
+    }
     const syncContMeta = {
       title: args.description,
       metadata: {
@@ -179,6 +250,9 @@ export async function executeSyncContinuation(
     }
     setSessionTools(continuationID, tools)
 
+    releasePromptAsyncReservation(continuationID, "sync-continuation", {
+      reservedBy: "session-retention-checkpoint",
+    })
     await promptWithModelSuggestionRetry(client, {
       path: { id: continuationID },
       body: {
@@ -193,6 +267,7 @@ export async function executeSyncContinuation(
       queueBehavior: "defer",
       checkToolState: false,
     })
+    await recordSyncSessionRetentionCheckpoint(client, retentionCheckpoint, executorCtx.directory)
    } catch (promptError) {
      if (toastManager) {
        toastManager.removeTask(taskId)
@@ -200,7 +275,8 @@ export async function executeSyncContinuation(
      const errorMessage = getSessionNotFoundError(promptError, continuationID)?.message
        ?? (promptError instanceof Error ? promptError.message : String(promptError))
      detachFromManager?.()
-     scheduleSyncSessionDeletion(client, continuationID)
+     retentionHandoffConfirmed = true
+     await finalizeRetention()
      return `Failed to send continuation prompt: ${errorMessage}\n\nTask ID: ${continuationID}`
    }
 
@@ -213,9 +289,13 @@ export async function executeSyncContinuation(
         anchorMessageCount,
         anchorMessageID,
       }, syncPollTimeoutMs)
-      if (pollError && isSessionNotFoundPollError(pollError)) return pollError
+      if (pollError && isSessionNotFoundPollError(pollError)) {
+        retentionHandoffConfirmed = true
+        return pollError
+      }
       if (pollError && shouldAttemptPollErrorRecovery(pollError)) {
         if (anchorMessageCount === undefined) {
+          retentionHandoffConfirmed = true
           return pollError
         }
         const recoveredResult = await deps.fetchSyncResult(client, continuationID, anchorMessageCount, {
@@ -223,11 +303,14 @@ export async function executeSyncContinuation(
           deliverableTag: getDeliverableTag(resumeAgent),
         })
         if (!recoveredResult.ok) {
+          retentionHandoffConfirmed = true
           return pollError
         }
 
         const duration = formatDuration(startTime)
         handedBackToParent = true
+        retentionHandoffConfirmed = true
+        retentionTerminalStatus = "completed"
 
         return `Task continued and completed in ${duration}.
 
@@ -242,6 +325,7 @@ ${buildTaskMetadataBlock({
           category: args.category,
         })}`
       } else if (pollError) {
+        retentionHandoffConfirmed = true
         return pollError
       }
 
@@ -249,11 +333,14 @@ ${buildTaskMetadataBlock({
         deliverableTag: getDeliverableTag(resumeAgent),
       })
       if (!result.ok) {
+        retentionHandoffConfirmed = true
         return result.error
       }
 
      const duration = formatDuration(startTime)
      handedBackToParent = true
+     retentionHandoffConfirmed = true
+     retentionTerminalStatus = "completed"
 
      return `Task continued and completed in ${duration}.
 
@@ -279,9 +366,9 @@ ${buildTaskMetadataBlock({
          })
        }
      }
-     // Every terminal continuation path must restore the cleanup grace timer,
-     // including prompt/poll failures after revival cancelled the old timer.
-     detachFromManager?.()
-     scheduleSyncSessionDeletion(client, continuationID)
-   }
+      // Every terminal continuation path must restore the cleanup grace timer,
+      // including prompt/poll failures after revival cancelled the old timer.
+      detachFromManager?.()
+      await finalizeRetention()
+    }
 }

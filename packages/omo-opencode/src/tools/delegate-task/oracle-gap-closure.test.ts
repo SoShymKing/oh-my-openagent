@@ -208,7 +208,7 @@ describe("delegate-task Oracle gap closure", () => {
     }, "skill instructions")
 
     //#then
-    expect(promptCalls[0]?.body?.system).toBe("skill instructions")
+    expect(promptCalls.find((call) => call.body?.system !== undefined)?.body?.system).toBe("skill instructions")
   })
 
   test("#given background continuation loads skills through tool entry #when task resumes #then skill content is threaded into resumed prompt", async () => {
