@@ -10,9 +10,21 @@ function getTimeString(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
 
-export async function formatTaskResult(task: BackgroundTask, client: BackgroundOutputClient): Promise<string> {
+type TaskResultFormat = {
+  readonly output: string
+  readonly handoffEligible: boolean
+}
+
+function formatted(output: string, handoffEligible = true): TaskResultFormat {
+  return { output, handoffEligible }
+}
+
+export async function formatTaskResultWithHandoffStatus(
+  task: BackgroundTask,
+  client: BackgroundOutputClient,
+): Promise<TaskResultFormat> {
   if (!task.sessionId) {
-    return `Error: Task has no sessionID`
+    return formatted("Error: Task has no sessionID", false)
   }
 
   let messagesResult: BackgroundOutputMessagesResult
@@ -22,17 +34,17 @@ export async function formatTaskResult(task: BackgroundTask, client: BackgroundO
       getBackgroundOutputFetchTimeoutMs(),
     )
   } catch (error) {
-    return `Error fetching messages: ${error instanceof Error ? error.message : String(error)}`
+    return formatted(`Error fetching messages: ${error instanceof Error ? error.message : String(error)}`, false)
   }
 
   const errorMessage = getErrorMessage(messagesResult)
   if (errorMessage) {
-    return `Error fetching messages: ${errorMessage}`
+    return formatted(`Error fetching messages: ${errorMessage}`, false)
   }
 
   const messages = extractMessages(messagesResult)
   if (!Array.isArray(messages) || messages.length === 0) {
-    return `Task Result
+    return formatted(`Task Result
 
 Task ID: ${task.id}
 Description: ${task.description}
@@ -41,12 +53,12 @@ Session ID: ${task.sessionId}
 
 ---
 
-(No messages found)`
+(No messages found)`)
   }
 
   const relevantMessages = messages.filter((m) => m.info?.role === "assistant" || m.info?.role === "tool")
   if (relevantMessages.length === 0) {
-    return `Task Result
+    return formatted(`Task Result
 
 Task ID: ${task.id}
 Description: ${task.description}
@@ -55,7 +67,7 @@ Session ID: ${task.sessionId}
 
 ---
 
-(No assistant or tool response found)`
+(No assistant or tool response found)`)
   }
 
   const sortedMessages = [...relevantMessages].sort((a, b) => {
@@ -69,7 +81,7 @@ Session ID: ${task.sessionId}
     .map((message) => extractErrorMessage(message.info?.error))
     .find((message): message is string => typeof message === "string" && message.length > 0)
   if (sessionError) {
-    return `Task Result
+    return formatted(`Task Result
 
 Task ID: ${task.id}
 Description: ${task.description}
@@ -78,13 +90,13 @@ Session ID: ${task.sessionId}
 
 ---
 
-Session error: ${sessionError}`
+Session error: ${sessionError}`)
   }
 
   const newMessages = consumeNewMessages(task.sessionId, sortedMessages)
   if (newMessages.length === 0) {
     const duration = formatDuration(task.startedAt ?? new Date(), task.completedAt)
-    return `Task Result
+    return formatted(`Task Result
 
 Task ID: ${task.id}
 Description: ${task.description}
@@ -97,7 +109,7 @@ Session ID: ${task.sessionId}
 
 To retrieve the complete output, re-call this tool with:
 - background_output(task_id="${task.id}", full_session=true) — re-fetches all messages, bypassing the incremental cursor
-- Or use session_read(session_id="${task.sessionId}") to read the full child session transcript`
+- Or use session_read(session_id="${task.sessionId}") to read the full child session transcript`)
   }
 
   const extractedContent: string[] = []
@@ -129,7 +141,7 @@ To retrieve the complete output, re-call this tool with:
   const textContent = extractedContent.filter((text) => text.length > 0).join("\n\n")
   const duration = formatDuration(task.startedAt ?? new Date(), task.completedAt)
 
-  return `Task Result
+  return formatted(`Task Result
 
 Task ID: ${task.id}
 Description: ${task.description}
@@ -138,5 +150,9 @@ Session ID: ${task.sessionId}
 
 ---
 
-${textContent || "(No text output)"}`
+${textContent || "(No text output)"}`)
+}
+
+export async function formatTaskResult(task: BackgroundTask, client: BackgroundOutputClient): Promise<string> {
+  return (await formatTaskResultWithHandoffStatus(task, client)).output
 }
