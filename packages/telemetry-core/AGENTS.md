@@ -17,6 +17,7 @@ Harness-neutral PostHog telemetry: env-gated opt-out, SHA256-hashed machine id, 
 | `machine-id.ts` | `getTelemetryDistinctId`, `getDefaultTelemetryOsProvider` |
 | `events.ts` | `createEventTelemetryClient` — typed event capture wrapper (see NOTES) + `EventTelemetryClient`, `EventPropertyAllowlist`, `CreateEventTelemetryClientInput`, … |
 | `diagnostics.ts` | `writeTelemetryDiagnostic`, `cleanupTelemetryDiagnostics` |
+| `consent-gated-fetch.ts` | `createConsentGatedFetch` — the PostHog `fetch` option gated on consent at send time; every SDK flush (interval, batch size, shutdown) goes through it, and a dropped batch answers 200 so it leaves the queue unsent |
 | `constants.ts` | `DEFAULT_POSTHOG_HOST`, `DEFAULT_POSTHOG_API_KEY` |
 | `types.ts` | `TelemetryProductConfig`, `TelemetryClient`, `TelemetryTransport(Factory)`, `TelemetryOsProvider`, … |
 
@@ -26,6 +27,8 @@ Harness-neutral PostHog telemetry: env-gated opt-out, SHA256-hashed machine id, 
 - **Consumed by BOTH editions:** `omo-opencode/src/shared/posthog*.ts`; `omo-codex/src/telemetry/*` and `omo-codex/plugin/components/telemetry/*`.
 
 ## NOTES
+
+- The `./injected` entry exposes SDK-free clients and daily-active recording with a required `transportFactory`; the default root exports remain synchronous wrappers around the same implementations. `posthog-transport.ts` owns the SDK import and is exposed as `./posthog-transport` for lazy sidecar entries. Keep the subpath declaration files aligned with the root's maintained public types.
 
 - **At most once per UTC day per machine.** `getDailyActiveCaptureState` compares last-active UTC day in the state file; same day → `captureDaily: false`, nothing sent.
 - **`$process_person_profile: false`** hardcoded on every capture — no PostHog person profiles.

@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@code-yeongyu/senpi"
+import type { EvalHandleHost, ToolDefinition } from "@code-yeongyu/senpi"
 
 import type { IdleInjectionCoordinator } from "./idle-injection-coordinator"
 import type { StartupWork } from "./startup-deferral"
@@ -14,8 +14,12 @@ export type ReadClassifier = (input: {
   readonly cwd: string
 }) => CompactReadClassification | undefined
 
+export interface BeforeAgentStartHandlerOptions {
+  previewSafe?: boolean
+}
+
 export interface SenpiExtensionAPI {
-  readonly sharedHostEnabled?: boolean
+  readonly sessionKind?: "interactive" | "worker"
   /**
    * Absolute cwd of the session this extension instance was loaded for. senpi builds one
    * ExtensionAPI per session and already knows the value at load time. Optional because hosts
@@ -29,7 +33,11 @@ export interface SenpiExtensionAPI {
    * added it report none, and consumers fall back to the per-child process env.
    */
   readonly sessionContext?: unknown
-  on(event: string, handler: (payload: unknown, ctx?: unknown) => unknown | Promise<unknown>): void
+  on(
+    event: string,
+    handler: (payload: unknown, ctx?: unknown) => unknown | Promise<unknown>,
+    options?: BeforeAgentStartHandlerOptions,
+  ): void
   rpc?: {
     emit(name: string, data: unknown): void
     handle?(name: string, handler: (data: unknown) => unknown | Promise<unknown>): void
@@ -49,14 +57,44 @@ export interface SenpiExtensionAPI {
     },
   ): void
   getFlag(name: string): boolean | string | undefined
+  /** The session's current name (`/name`, `set_session_name`); undefined when it has none. */
+  getSessionName?(): string | undefined
+  /** The permission preset senpi enforces for this session (senpi #3301); undefined without the permission system. */
+  getPermissionPreset?(): string | undefined
   sendMessage(message: Record<string, unknown>, options?: Record<string, unknown>): void | Promise<void>
   sendUserMessage(content: string | readonly Record<string, unknown>[], options?: { deliverAs?: "steer" | "followUp" }): void
+  /** senpi's slash-command registry: extension commands, prompt templates, and `skill:<name>` entries. */
+  getCommands?(): readonly {
+    readonly name: string
+    readonly description?: string
+    readonly source: string
+    readonly sourceInfo?: { readonly path?: string }
+  }[]
   /** Feature-detected until the pinned Senpi runtime exports read classifiers. */
   registerReadClassifier?(classifier: ReadClassifier): () => void
   registerRemovedToolHint?(name: string, hint: string): void
+  /** Feature-detected: senpi runtimes before 2026.10.7 have no eval-handle capability slot. */
+  provideEvalHandleHost?(host: EvalHandleHost): void
   registerMessageRenderer?(customType: string, renderer: unknown): void
-  appendEntry?(customType: string, data?: unknown): void
+  /** `options.startupBookkeeping` (senpi#3329): older hosts ignore the third argument. */
+  appendEntry?(customType: string, data?: unknown, options?: { readonly startupBookkeeping?: boolean }): void
   registerMcpServer?(name: string, config: Record<string, unknown>): void
+  /** The running senpi version (code-yeongyu/senpi#3674); hosts before it report none. */
+  readonly hostVersion?: string
+  /**
+   * senpi's one upload redactor (code-yeongyu/senpi#3674), the same path `/share` uses. Feature-detected: hosts older
+   * than the release that added it expose nothing, and nothing may be uploaded without it.
+   */
+  redactForUpload?(
+    text: string,
+    options?: { readonly extraLiterals?: readonly string[] },
+  ): { readonly text: string; readonly counts: Readonly<Record<string, number>> }
+  /** Run a command. Feature-detected: hosts older than the release that added it expose nothing. */
+  exec?(
+    command: string,
+    args: string[],
+    options?: { cwd?: string; timeout?: number },
+  ): Promise<{ stdout: string; stderr: string; code: number }>
 }
 
 export interface ComponentLogger {
@@ -69,7 +107,6 @@ export interface ComponentLogger {
 
 export interface ComponentContext {
   logger: ComponentLogger
-  sharedHostEnabled?: boolean
   config: {
     getFlag(name: string): boolean | string | undefined
   }

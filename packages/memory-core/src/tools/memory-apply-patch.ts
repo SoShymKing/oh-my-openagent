@@ -1,13 +1,14 @@
 import { access, mkdir, readFile, unlink, writeFile } from "../fs/resilient"
 import { dirname, join, relative } from "node:path"
 
-import { NoEffectiveChangesError, type GitCommitAuthor, type GitMemoryRepo } from "../git"
+import { NoEffectiveChangesError, MemorySecretError, type GitCommitAuthor, type GitMemoryRepo } from "../git"
 import { SOUL_EDIT_RESULT_LINE, touchesSoulPath } from "../soul"
 import type { MemoryToolCommit, MemoryToolProvenance } from "./memory"
 import { parseMemoryFile, renderMemoryFile } from "../memfs/frontmatter"
 import { describeDescriptionViolation } from "../memfs/frontmatter-validation"
 import { MemoryPathError, validateMemoryPath } from "../memfs/paths"
 import type { LockDomain } from "../locks"
+import { refuseAgreementsViolation } from "./agreements-write-guard"
 import {
   applyMemoryPatchHunk,
   MemoryPatchHunkError,
@@ -64,6 +65,8 @@ export async function runMemoryApplyPatch(
     return await lock("memory-write", async () => {
       await repo.cleanCheck()
       const paths = await applyOperations(repo.dir, parseMemoryPatch(params.input))
+      const violation = await refuseAgreementsViolation(repo, paths)
+      if (violation !== undefined) throw new MemoryApplyPatchError(violation)
       let result
       try {
         result = await repo.commitWrite(paths, memoryCommitMessage(reason, params.provenance), params.author)
@@ -74,6 +77,10 @@ export async function runMemoryApplyPatch(
             "The patched content matched what was already on disk.",
             { cause: error },
           )
+        }
+        if (error instanceof MemorySecretError) {
+          await repo.restorePaths(paths)
+          throw new MemoryApplyPatchError(error.message, { cause: error })
         }
         throw error
       }

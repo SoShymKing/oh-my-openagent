@@ -28,11 +28,14 @@ export class HostSessionOpenError extends Error {
   override readonly name = "HostSessionOpenError"
   readonly code: string
   readonly sessionPath: string
+  /** The host's retry hint (`errorData.retry_after_ms`) when the refusal is temporary. */
+  readonly retryAfterMs: number | undefined
 
-  constructor(code: string, sessionPath: string, detail: string) {
+  constructor(code: string, sessionPath: string, detail: string, retryAfterMs?: number) {
     super(`open_session for ${sessionPath} was refused (${code}): ${detail}`)
     this.code = code
     this.sessionPath = sessionPath
+    this.retryAfterMs = retryAfterMs
   }
 }
 
@@ -64,7 +67,14 @@ const closedSchema = z.object({
   reason: z.string().min(1).optional(),
 })
 
-const controlRecordSchema = z.discriminatedUnion("type", [uiRequestSchema, parkedSchema, closedSchema])
+const replacedSchema = z.object({
+  type: z.literal("session_replaced"),
+  sessionId: z.string().min(1).optional(),
+  durableSessionId: z.string().min(1),
+  sessionFile: z.string().min(1),
+})
+
+const controlRecordSchema = z.discriminatedUnion("type", [uiRequestSchema, parkedSchema, closedSchema, replacedSchema])
 
 /** A frame the session client itself acts on, as opposed to an agent event it fans out. */
 export type HostControlRecord = z.infer<typeof controlRecordSchema>
@@ -103,7 +113,7 @@ export function toOpenFailure(error: unknown, sessionPath: string): unknown {
   const code = readErrorCode(error)
   if (code === undefined) return error
   if (code === "session_path_in_use") return new SessionHeldElsewhereError(sessionPath, readHold(error), error.message)
-  return new HostSessionOpenError(code, sessionPath, error.message)
+  return new HostSessionOpenError(code, sessionPath, error.message, readHold(error).retryAfterMs)
 }
 
 const ERROR_CODE = /^[a-z][a-z0-9_]*$/

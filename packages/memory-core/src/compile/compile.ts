@@ -1,10 +1,17 @@
+import { AGREEMENTS_PATH } from "../agreements/types"
+import { renderAgreementsSection } from "../agreements/render"
 import type { GitMemoryRepo } from "../git"
 import { parseMemoryFile } from "../memfs/frontmatter"
+import { redactSecretLikeMaterial } from "../sync/redact"
 import {
+  DEFAULT_EXTERNAL_PROJECTION_LIMITS,
   renderExternalProjection,
-  renderSystemTree,
-  type CompiledSystemFile,
-} from "./render"
+  renderExternalProjectionStats,
+  type ExternalProjectionInput,
+  type ExternalProjectionLimits,
+  type ExternalProjectionStats,
+} from "./external-projection"
+import { renderSystemTree, type CompiledSystemFile } from "./render"
 
 const PERSONA_PATH = "system/persona.md"
 const IDENTITY_PATH = "system/identity.md"
@@ -13,6 +20,8 @@ const REMINDER =
 
 export interface CompileMemoryBlockOptions {
   agentId: string
+  /** Bounds `<external_projection>`; omitted means `DEFAULT_EXTERNAL_PROJECTION_LIMITS`. */
+  projection?: ExternalProjectionLimits
 }
 
 export async function compileMemoryBlock(
@@ -34,13 +43,44 @@ export async function compileMemoryBlockAtRevision(
   const identity = revision && paths.includes(IDENTITY_PATH)
     ? await readSystemFile(repo, revision, IDENTITY_PATH)
     : undefined
+  const agreements = revision && paths.includes(AGREEMENTS_PATH)
+    ? await readSystemFile(repo, revision, AGREEMENTS_PATH)
+    : undefined
   const systemFiles = revision
     ? await readSystemFiles(repo, revision, paths.filter(isOtherSystemMarkdown))
     : []
   const externalPaths = paths.filter(isExternalPath)
-  const projection = renderProjection(persona, identity, systemFiles, externalPaths)
+  const external = await projectionInput(repo, revision, externalPaths, options.projection)
+  const projection = renderProjection(persona, identity, agreements, systemFiles, externalPaths, external)
   const metadata = renderMetadata(options)
   return [projection, metadata].filter((part) => part.length > 0).join("\n\n")
+}
+
+/** What `<external_projection>` would show at `revision` under `limits`, without compiling the block. */
+export async function externalProjectionStatsAt(
+  repo: GitMemoryRepo,
+  revision: string,
+  limits: ExternalProjectionLimits = DEFAULT_EXTERNAL_PROJECTION_LIMITS,
+): Promise<ExternalProjectionStats> {
+  const externalPaths = (await repo.lsTree(revision)).filter(isExternalPath)
+  return renderExternalProjectionStats(externalPaths, await projectionInput(repo, revision, externalPaths, limits))
+}
+
+async function projectionInput(
+  repo: GitMemoryRepo,
+  revision: string | null,
+  externalPaths: readonly string[],
+  limits: ExternalProjectionLimits = DEFAULT_EXTERNAL_PROJECTION_LIMITS,
+): Promise<ExternalProjectionInput> {
+  const bounded = limits.maxEntriesPerDirectory > 0 || limits.maxBytes > 0
+  if (!bounded || !revision || externalPaths.length === 0) return { times: new Map(), limits }
+  try {
+    return { times: await repo.pathCommitTimes(revision), limits }
+  } catch {
+    // Commit times only order names; without them the same limits apply in name order, and the
+    // fallback is reported (`/doctor` projection) instead of silently changing the order.
+    return { times: new Map(), limits, recencyUnavailable: true }
+  }
 }
 
 async function readSystemFiles(
@@ -62,8 +102,8 @@ async function readSystemFile(
     const parsed = parseMemoryFile(await repo.show(revision, relativePath))
     return {
       relativePath,
-      body: parsed.body,
-      description: parsed.frontmatter.description,
+      body: redactSecretLikeMaterial(parsed.body),
+      description: redactSecretLikeMaterial(parsed.frontmatter.description),
     }
   } catch {
     return undefined
@@ -73,10 +113,13 @@ async function readSystemFile(
 function renderProjection(
   persona: CompiledSystemFile | undefined,
   identity: CompiledSystemFile | undefined,
+  agreements: CompiledSystemFile | undefined,
   systemFiles: readonly CompiledSystemFile[],
   externalPaths: readonly string[],
+  external: ExternalProjectionInput,
 ): string {
-  if (!persona && !identity && systemFiles.length === 0 && externalPaths.length === 0) return ""
+  const agreementsSection = agreements === undefined ? "" : renderAgreementsSection(agreements.body)
+  if (!persona && !identity && !agreementsSection && systemFiles.length === 0 && externalPaths.length === 0) return ""
   const lines = [REMINDER]
   if (persona || identity) {
     lines.push("", "<self>")
@@ -94,17 +137,19 @@ function renderProjection(
     }
     lines.push("</self>")
   }
+  if (agreementsSection) lines.push("", agreementsSection)
   if (systemFiles.length > 0 || externalPaths.length > 0) {
     lines.push("", "<memory>")
     if (systemFiles.length > 0) lines.push(renderSystemTree(systemFiles))
-    if (externalPaths.length > 0) lines.push(renderExternalProjection(externalPaths))
+    if (externalPaths.length > 0) lines.push(renderExternalProjection(externalPaths, external))
     lines.push("</memory>")
   }
   return lines.join("\n")
 }
 
 function isOtherSystemMarkdown(path: string): boolean {
-  return path.startsWith("system/") && path !== PERSONA_PATH && path !== IDENTITY_PATH && path.endsWith(".md")
+  return path.startsWith("system/") && path !== PERSONA_PATH && path !== IDENTITY_PATH && path !== AGREEMENTS_PATH
+    && path.endsWith(".md")
 }
 
 function isExternalPath(path: string): boolean {

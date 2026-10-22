@@ -5,6 +5,8 @@ import { classifySessionExit, type SessionExitClassification, type SessionExitIn
 import { openHostSessionHandle } from "./handle.test-support"
 import type { HostSessionParked } from "./session-client"
 import { sessionClientHarness } from "./session-client.test-support"
+import { TRANSPORT_LOST_REASON } from "./transport-recovery"
+import { InputUncertainError } from "../input-effects"
 
 const harness = sessionClientHarness()
 const { fakeHost, hostClient } = harness
@@ -49,9 +51,9 @@ const MAPPING_ROWS: readonly MappingRow[] = [
   },
   {
     given: "the connection to the daemon is lost under a live session",
-    then: "the exit is crashed with a transport_gone tail",
+    then: "the exit is crashed with a transport lost tail",
     input: { cause: { kind: "transport_gone" }, intent: "running" },
-    expected: { disposition: "exit", outcome: { kind: "crashed", facts: facts("transport_gone") } },
+    expected: { disposition: "exit", outcome: { kind: "crashed", facts: facts(TRANSPORT_LOST_REASON) } },
   },
   {
     given: "the session never opened",
@@ -64,27 +66,27 @@ const MAPPING_ROWS: readonly MappingRow[] = [
   },
   {
     given: "the daemon parks an idle session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the idle sweep",
     input: { cause: { kind: "session_parked" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
   {
     given: "a handoff parks the session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the handoff",
     input: { cause: { kind: "session_closed", reason: "handoff_parked" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "handoff_parked" },
   },
   {
     given: "the idle sweep evicts the session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the idle sweep",
     input: { cause: { kind: "session_closed", reason: "idle_evicted" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
   {
     given: "the idle sweep evicts a session a terminate is already closing",
     then: "parking still wins over the terminate intent",
     input: { cause: { kind: "session_closed", reason: "idle_evicted" }, intent: "terminated" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
 ]
 
@@ -129,14 +131,15 @@ describe("createHostSessionHandle over a daemon session", () => {
     const handle = await openHostSessionHandle({ client, sessionPath: "/tmp/sessions/b.jsonl" })
     const parked: HostSessionParked[] = []
     handle.onParked((park) => parked.push(park))
+    const released = host.waitForConnections(0)
 
     // when
     host.evict("/tmp/sessions/b.jsonl")
-    // A reply on the SAME connection cannot overtake the park record that preceded it.
-    await client.getState()
+    // The park releases this session's client (#10062): its connection closing proves the park was handled.
+    await released
 
     // then
-    expect(parked).toEqual([{ sessionId: "routing-1", sessionPath: "/tmp/sessions/b.jsonl" }])
+    expect(parked).toEqual([{ sessionId: "routing-1", sessionPath: "/tmp/sessions/b.jsonl", reason: "idle_evicted" }])
     expect(handle.exitOutcome()).toBeUndefined()
     expect(handle.attached).toBe(false)
     await handle.dispose()
@@ -149,13 +152,13 @@ describe("createHostSessionHandle over a daemon session", () => {
     const handle = await openHostSessionHandle({ client, sessionPath: "/tmp/sessions/c.jsonl" })
     const parked: HostSessionParked[] = []
     handle.onParked((park) => parked.push(park))
+    const released = host.waitForConnections(0)
     host.evict("/tmp/sessions/c.jsonl")
-    await client.getState()
+    await released
     expect(parked).toHaveLength(1)
 
-    // when
+    // when: the park already released the client, so the crash reaches no connection of this handle
     host.crash()
-    await client.transportGone
 
     // then
     expect(handle.exitOutcome()).toBeUndefined()
@@ -177,8 +180,8 @@ describe("createHostSessionHandle over a daemon session", () => {
     host.crash()
 
     // then
-    await expect(started).rejects.toMatchObject({ code: "rpc_transport_gone" })
-    expect(await handle.waitForExit()).toEqual({ kind: "crashed", facts: facts("transport_gone") })
+    await expect(started).rejects.toBeInstanceOf(InputUncertainError)
+    expect(await handle.waitForExit()).toEqual({ kind: "crashed", facts: facts(TRANSPORT_LOST_REASON) })
     expect((await handle.waitForOutcome()).status).toBe("error")
     expect(handle.attached).toBe(false)
     await handle.dispose()
@@ -262,8 +265,9 @@ describe("createHostSessionHandle over a daemon session", () => {
     const host = await fakeHost()
     const client = hostClient(host)
     const handle = await openHostSessionHandle({ client, sessionPath: "/tmp/sessions/j.jsonl", closeGraceMs: 50 })
+    const released = host.waitForConnections(0)
     host.evict("/tmp/sessions/j.jsonl")
-    await client.getState()
+    await released
     expect(handle.exitOutcome()).toBeUndefined()
 
     // when

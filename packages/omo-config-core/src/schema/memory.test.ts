@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import {
+  OmoMemoryRecallLayerSchema,
   OmoMemorySettingsLayerSchema,
   OmoMemorySettingsSchema,
   type OmoMemorySettings,
@@ -28,6 +29,7 @@ const FULL_DEFAULTS: OmoMemorySettings = {
     auto_select_max_chars: 150000,
   },
   people: { enabled: true, max_entries: 40, max_entry_chars: 200 },
+  agreements: { enabled: true, needs_human_threshold: 3, max_items: 64 },
   soul: { edit_notice: true },
   write_notice: { enabled: true },
   sync: { enabled: true },
@@ -40,7 +42,9 @@ const FULL_DEFAULTS: OmoMemorySettings = {
     sidecar_max_tokens: 48000,
     max_concurrent_wakes: 2,
     tool_budget: 8,
+    query_expansion: false,
   },
+  projection: { max_entries_per_directory: 40, max_bytes: 24576 },
   compile_warn_tokens: 30000,
   agents: {},
 }
@@ -81,6 +85,7 @@ describe("OmoMemorySettingsSchema defaults", () => {
         auto_select_max_chars: 100000,
       },
       people: { enabled: false, max_entries: 20, max_entry_chars: 100 },
+      agreements: { enabled: false, needs_human_threshold: 5, max_items: 32 },
       soul: { edit_notice: false },
       write_notice: { enabled: false },
       sync: { remote: "file:///tmp/memory-mirror.git", enabled: true },
@@ -93,12 +98,15 @@ describe("OmoMemorySettingsSchema defaults", () => {
         sidecar_max_tokens: 48000,
         max_concurrent_wakes: 2,
         tool_budget: 8,
+        query_expansion: false,
       },
+      projection: { max_entries_per_directory: 12, max_bytes: 4096 },
       compile_warn_tokens: 50000,
       agents: {
         "backend-lead": {
           enabled: true,
           reflection: { trigger: { step_count: 10 }, category: "quick" },
+          agreements: { needs_human_threshold: 2 },
         },
       },
     }
@@ -233,6 +241,7 @@ describe("OmoMemorySettingsSchema defaults", () => {
       sidecar_max_tokens: 48000,
       max_concurrent_wakes: 2,
       tool_budget: 8,
+      query_expansion: false,
     })
   })
 
@@ -261,6 +270,7 @@ describe("OmoMemorySettingsSchema defaults", () => {
         sidecar_max_tokens: 48000,
         max_concurrent_wakes: 2,
         tool_budget: 8,
+        query_expansion: false,
       },
     }
 
@@ -276,6 +286,7 @@ describe("OmoMemorySettingsSchema defaults", () => {
       sidecar_max_tokens: 48000,
       max_concurrent_wakes: 2,
       tool_budget: 8,
+      query_expansion: false,
     })
   })
 
@@ -350,5 +361,31 @@ describe("OmoMemorySettingsSchema defaults", () => {
 
     // then
     expect(parsed).toEqual(input)
+  })
+})
+
+describe("memory.recall.query_expansion", () => {
+  test("#given no recall block #when parsed #then query expansion is off", () => {
+    expect(OmoMemorySettingsSchema.parse({}).recall.query_expansion).toBe(false)
+  })
+
+  test("#given query expansion set at the root and for one agent #when parsed #then both values are kept", () => {
+    // given
+    const input = { recall: { query_expansion: true }, agents: { research: { recall: { query_expansion: false } } } }
+
+    // when
+    const parsed = OmoMemorySettingsSchema.parse(input)
+
+    // then
+    expect(parsed.recall.query_expansion).toBe(true)
+    expect(parsed.agents.research?.recall).toEqual({ query_expansion: false })
+  })
+
+  test("#given a query expansion value that is not a boolean #when parsed #then validation fails", () => {
+    const recall = { query_expansion: "on" }
+    expect(OmoMemorySettingsSchema.safeParse({ recall }).success).toBe(false)
+    expect(OmoMemoryRecallLayerSchema.safeParse(recall).success).toBe(false)
+    expect(OmoMemorySettingsLayerSchema.safeParse({ recall }).success).toBe(false)
+    expect(OmoMemorySettingsLayerSchema.safeParse({ agents: { research: { recall } } }).success).toBe(false)
   })
 })

@@ -1,8 +1,13 @@
 import {
+  EFFECTIVE_MODEL_CHANGE_KINDS,
+  EFFECTIVE_MODEL_SOURCES,
   RESOLVED_MODEL_SOURCES,
   RUNNER_KINDS,
   SUSPENSION_REASONS,
-  type HostSessionIdentity,
+  type EffectiveModelChange,
+  type EffectiveModelChangeKind,
+  type EffectiveModelRecord,
+  type EffectiveModelSource,
   type PendingSteeringEntry,
   type ResolvedModelRecord,
   type RunnerKind,
@@ -14,11 +19,76 @@ import type { DagTaskOwner } from "../dag/owner"
 import {
   isRecord,
   readNumber,
+  readOptionalBoolean,
   readOptionalNumber,
   readOptionalString,
   readOptionalStringArray,
   readString,
 } from "./scalar-read"
+import { IsolationBackendKindSchema } from "@oh-my-opencode/omo-config-core"
+import type { IsolationMergeResult, IsolationRecord, TaskIsolationSpec } from "../state"
+export { parseOptionalHostSession, validateHostSessionConsistency } from "./host-session-parse"
+
+function parseIsolationSpec(value: unknown): TaskIsolationSpec {
+  if (!isRecord(value)) throw new Error("isolation is not an object")
+  const mode = readString(value, "mode")
+  if (mode !== "patch" && mode !== "branch") throw new Error("isolation.mode must be patch or branch")
+  const apply = readOptionalBoolean(value, "apply")
+  if (apply === undefined) throw new Error("isolation.apply is required")
+  const fellBack = readOptionalBoolean(value, "fell_back")
+  return {
+    backend: IsolationBackendKindSchema.parse(value["backend"]),
+    ...(fellBack === undefined ? {} : { fell_back: fellBack }),
+    merged_dir: readString(value, "merged_dir"),
+    base_dir: readString(value, "base_dir"),
+    mode,
+    apply,
+  }
+}
+
+export function parseOptionalIsolation(record: Record<string, unknown>): IsolationRecord | undefined {
+  const value = record["isolation"]
+  if (value === undefined) return undefined
+  const spec = parseIsolationSpec(value)
+  if (!isRecord(value)) throw new Error("isolation is not an object")
+  const mergeResult = value["merge_result"]
+  if (mergeResult === undefined) return spec
+  if (!isRecord(mergeResult)) throw new Error("isolation.merge_result is not an object")
+  const kind = readString(mergeResult, "kind")
+  if (kind !== "applied" && kind !== "already-applied" && kind !== "not-applied" &&
+      kind !== "branch-merged" && kind !== "branch-merge-failed" && kind !== "no-changes" && kind !== "retained") {
+    throw new Error("isolation.merge_result.kind is invalid")
+  }
+  const changesApplied = readOptionalBoolean(mergeResult, "changesApplied")
+  if (changesApplied === undefined) throw new Error("isolation.merge_result.changesApplied is required")
+  const duration = readOptionalNumber(mergeResult, "duration_ms")
+  const patchPath = readOptionalString(mergeResult, "patchPath")
+  const error = readOptionalString(mergeResult, "error")
+  const reason = readOptionalString(mergeResult, "reason")
+  const summaryPath = readOptionalString(mergeResult, "summaryPath")
+  const filesChanged = readOptionalNumber(mergeResult, "filesChanged")
+  const nestedPatchPaths = readOptionalStringArray(mergeResult, "nestedPatchPaths")
+  const branchName = readOptionalString(mergeResult, "branchName")
+  const partial = readOptionalBoolean(mergeResult, "partial")
+  const conflict = readOptionalString(mergeResult, "conflict")
+  const manualCommand = readOptionalString(mergeResult, "manualCommand")
+  const parsed: IsolationMergeResult = {
+    kind,
+    changesApplied,
+    ...(duration === undefined ? {} : { duration_ms: duration }),
+    ...(patchPath === undefined ? {} : { patchPath }),
+    ...(error === undefined ? {} : { error }),
+    ...(reason === undefined ? {} : { reason }),
+    ...(summaryPath === undefined ? {} : { summaryPath }),
+    ...(filesChanged === undefined ? {} : { filesChanged }),
+    ...(nestedPatchPaths === undefined ? {} : { nestedPatchPaths }),
+    ...(branchName === undefined ? {} : { branchName }),
+    ...(partial === undefined ? {} : { partial }),
+    ...(conflict === undefined ? {} : { conflict }),
+    ...(manualCommand === undefined ? {} : { manualCommand }),
+  }
+  return { ...spec, merge_result: parsed }
+}
 
 // Parsers for the nested blocks of a persisted task record: ownership, spawn spec, prelaunch
 // steering queue, resolved-model chain, notification epochs, host session identity, and runner kind.
@@ -48,37 +118,6 @@ export function readOptionalSuspensionReason(
   return readOptionalLiteral(record, "suspension_reason", SUSPENSION_REASONS) as SuspensionReason | undefined
 }
 
-export function parseOptionalHostSession(
-  record: Record<string, unknown>,
-): HostSessionIdentity | undefined {
-  const value = record["host_session"]
-  if (value === undefined) return undefined
-  if (!isRecord(value)) throw new Error("host_session is not an object")
-
-  const socket = readString(value, "socket")
-  const routingId = readString(value, "routing_id")
-  const sessionPath = readString(value, "session_path")
-  const instanceId = readString(value, "instance_id")
-  const daemonPid = readOptionalNumber(value, "daemon_pid")
-
-  return {
-    socket,
-    routing_id: routingId,
-    session_path: sessionPath,
-    instance_id: instanceId,
-    ...(daemonPid === undefined ? {} : { daemon_pid: daemonPid }),
-  }
-}
-
-export function validateHostSessionConsistency(
-  runnerKind: RunnerKind | undefined,
-  hostSession: HostSessionIdentity | undefined,
-): void {
-  if (hostSession !== undefined && runnerKind !== "host-session") {
-    throw new Error("host_session present but runner_kind is not 'host-session'")
-  }
-}
-
 export function parseOptionalOwner(record: Record<string, unknown>): DagTaskOwner | undefined {
   const value = record["owner"]
   if (value === undefined) return undefined
@@ -104,8 +143,12 @@ export function parseOptionalSpawnSpec(record: Record<string, unknown>): TaskSpa
     const prompt = readString(value, "prompt")
     const instructions = readOptionalString(value, "instructions")
     const memberScopedToolNames = readOptionalStringArray(value, "member_scoped_tool_names")
+    const isolation: TaskIsolationSpec | undefined = value["isolation"] === undefined
+      ? undefined
+      : parseIsolationSpec(value["isolation"])
     return {
       version: 1,
+      ...(isolation === undefined ? {} : { isolation }),
       cwd,
       prompt,
       ...(instructions === undefined ? {} : { instructions }),
@@ -178,6 +221,53 @@ export function parseOptionalResolvedModel(
   return readResolvedModel(value)
 }
 
+// effective_model accepts the wider live-event source set and the operator flag (F12); every
+// other resolved-model field is shared with readResolvedModel. On disk the live-event detail
+// lives in a nested `change` block while `source` keeps an old-union value pre-F12 builds parse
+// (store/storable-record.ts); records this branch's earlier heads persisted with a live kind
+// directly in `source` map back unchanged.
+export function parseOptionalEffectiveModel(
+  record: Record<string, unknown>,
+): EffectiveModelRecord | undefined {
+  const value = record["effective_model"]
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error("effective_model is not an object")
+  const base = readResolvedModelFields(value)
+  const change = readEffectiveModelChange(value)
+  if (change !== undefined) {
+    return {
+      ...base,
+      source: change.kind,
+      ...(change.switched_by_operator === undefined ? {} : { switched_by_operator: change.switched_by_operator }),
+    }
+  }
+  const source = readString(value, "source")
+  if (!(EFFECTIVE_MODEL_SOURCES as readonly string[]).includes(source)) {
+    throw new Error(`effective_model.source must be ${EFFECTIVE_MODEL_SOURCES.join(" or ")}`)
+  }
+  const switchedByOperator = readOptionalBoolean(value, "switched_by_operator")
+  return {
+    ...base,
+    source: source as EffectiveModelSource,
+    ...(switchedByOperator === undefined ? {} : { switched_by_operator: switchedByOperator }),
+  }
+}
+
+function readEffectiveModelChange(value: Record<string, unknown>): EffectiveModelChange | undefined {
+  const change = value["change"]
+  if (change === undefined) return undefined
+  if (!isRecord(change)) throw new Error("effective_model.change is not an object")
+  const kind = readString(change, "kind")
+  if (!(EFFECTIVE_MODEL_CHANGE_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(`effective_model.change.kind must be ${EFFECTIVE_MODEL_CHANGE_KINDS.join(" or ")}`)
+  }
+  const switchedByOperator = readOptionalBoolean(change, "switched_by_operator")
+  return {
+    kind: kind as EffectiveModelChangeKind,
+    ...(switchedByOperator === undefined ? {} : { switched_by_operator: switchedByOperator }),
+  }
+}
+
 export function parseOptionalResolvedModelArray(
   record: Record<string, unknown>,
   key: "fallback_models" | "fallback_attempts",
@@ -205,6 +295,14 @@ export function parseNotification(record: Record<string, unknown>): TaskNotifica
 }
 
 function readResolvedModel(value: Record<string, unknown>): ResolvedModelRecord {
+  return { ...readResolvedModelFields(value), source: readResolvedModelSource(value) }
+}
+
+// Everything but the source, shared by the resolved and effective model readers: each
+// validates its own source union.
+function readResolvedModelFields(
+  value: Record<string, unknown>,
+): Omit<ResolvedModelRecord, "source"> {
   const variant = readOptionalString(value, "variant")
   const legacyReasoningEffort = readOptionalString(value, "reasoning_effort")
   const reasoning = readOptionalString(value, "reasoning")
@@ -212,7 +310,6 @@ function readResolvedModel(value: Record<string, unknown>): ResolvedModelRecord 
     provider: readString(value, "provider"),
     model_id: readString(value, "model_id"),
     display: readString(value, "display"),
-    source: readResolvedModelSource(value),
     ...(variant === undefined ? {} : { variant }),
     ...(legacyReasoningEffort === undefined ? {} : { reasoning_effort: legacyReasoningEffort }),
     ...(reasoning === undefined ? {} : { reasoning }),

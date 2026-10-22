@@ -1,9 +1,11 @@
 import { isAbsolute, relative, resolve, sep } from "node:path"
+import { AGREEMENTS_PATH } from "../agreements/types"
 import { readFile } from "../fs/resilient"
 import { createNodeGitExec, type GitExec } from "../git"
 import { FRONTMATTER_RE } from "../memfs/frontmatter-scalar"
 import { describeFrontmatterViolation } from "../memfs/frontmatter-validation"
 import { isMemoryContentPath } from "../memfs/paths"
+import { findSecretLikeFailure } from "./completion-secret-scan"
 import type { ReflectionWorktree } from "./worktree"
 
 const GIT_TIMEOUT_MS = 30_000
@@ -59,6 +61,12 @@ export async function validateCompletion(
     }
     if (tipSha === recordedBase) return { status: "no_changes", tipSha, changedPaths: [] }
 
+    const secretFailure = await findSecretLikeFailure(
+      (argv, stdin) => run(exec, worktree.dir, argv, stdin),
+      recordedBase,
+      tipSha,
+    )
+    if (secretFailure !== null) return { status: "failed", detail: secretFailure }
     const changed = await git(exec, worktree.dir, ["diff", "--name-only", "-z", `${recordedBase}..${tipSha}`, "--"])
     const changedPaths = changed.stdout.split("\0").filter(Boolean)
     if (changedPaths.length === 0) {
@@ -68,6 +76,11 @@ export async function validateCompletion(
       if (!isConfinedRepoPath(worktree.parent.dir, path) || path.split("/").includes(".git")) {
         return { status: "failed", detail: `Changed path escapes the memory repository: ${path}` }
       }
+    }
+    // Rename detection is off here on purpose: `git mv system/agreements.md elsewhere` must read as a deletion.
+    const ledger = await git(exec, worktree.dir, ["diff", "--no-renames", "--name-only", "-z", `${recordedBase}..${tipSha}`, "--", AGREEMENTS_PATH])
+    if (ledger.stdout.split("\0").some(Boolean)) {
+      return { status: "failed", detail: `Reflection may not modify ${AGREEMENTS_PATH}; agreements change only through the facts lane and /agreements` }
     }
     const frontmatterFailure = await findFrontmatterFailure(exec, worktree.dir, recordedBase, tipSha, changedPaths)
     if (frontmatterFailure !== null) return { status: "failed", detail: frontmatterFailure }
@@ -135,8 +148,13 @@ async function git(exec: GitExec, cwd: string, argv: readonly string[]) {
   return result
 }
 
-function run(exec: GitExec, cwd: string, argv: readonly string[]) {
-  return exec.run(argv, { cwd, timeoutMs: GIT_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } })
+function run(exec: GitExec, cwd: string, argv: readonly string[], stdin?: string) {
+  return exec.run(argv, {
+    cwd,
+    timeoutMs: GIT_TIMEOUT_MS,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    ...(stdin === undefined ? {} : { stdin }),
+  })
 }
 
 function errorMessage(error: unknown): string {

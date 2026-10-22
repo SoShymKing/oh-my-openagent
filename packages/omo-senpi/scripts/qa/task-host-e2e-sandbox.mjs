@@ -25,7 +25,10 @@ import {
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+
+import { resolveProjectStateDirectory } from "../../../senpi-task/src/store/project-state-directory.ts"
+import { withTelemetryOptOut } from "./telemetry-opt-out-env.mjs"
 
 export const DELETED_CHILD_ENV = [
   "SENPI_PACKAGE_DIR",
@@ -34,11 +37,28 @@ export const DELETED_CHILD_ENV = [
   "OMO_BIN",
   "SENPI_BIN",
   "PI_SESSION_FILE",
+  "OMO_RPC_SOCKET",
+  "SENPI_RPC_SOCKET",
+  "PI_RPC_SOCKET",
   "OMO_RPC_SOCKET_PATH",
   "SENPI_RPC_HOST_WATCH_FD",
+  "SENPI_CODING_AGENT_HOST_DIR",
+  "SENPI_CODING_AGENT_RUNTIME_DIR",
+  "OMO_CODING_AGENT_HOST_DIR",
+  "OMO_CODING_AGENT_RUNTIME_DIR",
+  "PI_CODING_AGENT_HOST_DIR",
+  "PI_CODING_AGENT_RUNTIME_DIR",
 ]
 
 export const AGENT_DIR_ENV_NAMES = ["OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"]
+
+/**
+ * Where the daemon and every parent of a scenario keep `cwd`'s task state: sandboxEnv pins every
+ * agent-dir lane to the scenario's agent dir, and the engine resolves the state dir from that env.
+ */
+export function scenarioStateDir(cwd, agentDir) {
+  return resolveProjectStateDirectory(cwd, "senpi-task", { env: Object.fromEntries(AGENT_DIR_ENV_NAMES.map((name) => [name, agentDir])) })
+}
 
 /**
  * What `realSenpiUntouched` GATES on: the two files a sandbox escape would have to read or rewrite to
@@ -129,6 +149,8 @@ export function injectDaemonMockProvider(pluginRoot, mockEntry, name = "omo-qa-m
   // per-child processes inherit the parent's `-e` mock provider instead.
   if (!existsSync(specPath)) return { specPath, extensions: [], launchSpecPresent: false }
   copyFileSync(mockEntry, join(pluginRoot, name))
+  copyFileSync(join(dirname(mockEntry), "task-e2e-mock-provider.ts"), join(pluginRoot, "task-e2e-mock-provider.ts"))
+  copyFileSync(join(dirname(mockEntry), "task-host-e2e-audit.mjs"), join(pluginRoot, "task-host-e2e-audit.mjs"))
   const spec = JSON.parse(readFileSync(specPath, "utf8"))
   const entry = `./${name}`
   if (!spec.core.extensions.includes(entry)) spec.core.extensions.push(entry)
@@ -142,10 +164,14 @@ function baseEnv({ home, agentDir, xdgConfigHome, extra = {} }) {
   for (const name of DELETED_CHILD_ENV) delete env[name]
   env.HOME = home
   env.XDG_CONFIG_HOME = xdgConfigHome
+  env.XDG_DATA_HOME = join(home, "data")
+  env.XDG_CACHE_HOME = join(home, "cache")
+  env.XDG_STATE_HOME = join(home, "state")
   for (const name of AGENT_DIR_ENV_NAMES) env[name] = agentDir
   env.OMO_SENPI_QA = "1"
   env.CI = "1"
-  return { ...env, ...extra }
+  env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
+  return { ...withTelemetryOptOut(env), ...extra }
 }
 
 /** One scenario's private world: its own agent dir (so its own daemon + socket), project and sessions. */
@@ -155,7 +181,7 @@ export function createScenarioSandbox(run, name, { omoConfig, script }) {
   const cwd = join(root, "proj")
   const xdgConfigHome = join(root, "xdg")
   const sessionDir = join(root, "sessions")
-  const stateDir = join(cwd, ".omo", "senpi-task")
+  const stateDir = scenarioStateDir(cwd, agentDir)
   for (const dir of [agentDir, cwd, xdgConfigHome, sessionDir, join(cwd, ".omo"), join(agentDir, "omo-senpi", "omo-native")]) {
     mkdirSync(dir, { recursive: true })
   }

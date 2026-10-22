@@ -6,8 +6,9 @@ import { join } from "node:path"
 import type { SenpiHostProtocolInfo } from "../../../lazy/senpi-barrel"
 import { FakeSessionTable, type FakeDrainedSession, type FakeHostSession } from "./fake-host-sessions"
 import { fakeProtocolInfo, probeFakeHost, type FakeHostIdentityOptions } from "./fake-host-probe"
-import { fakeHostTransport } from "./fake-host-transport"
-import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFailure } from "./fake-host-wire"
+import { fakeHostTransport, type FakeHostTransport } from "./fake-host-transport"
+import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFailure, type FakeHostWarmAnswer } from "./fake-host-wire"
+import { FakeInputAdmissions } from "./fake-input-admissions"
 
 /**
  * In-process unix-socket JSONL daemon: enough of the senpi multi-session wire for a child session
@@ -17,7 +18,7 @@ import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFail
  * parks a session, holds a path while it drains, hands its socket to a newer generation, and dies.
  */
 
-export type { FakeHostCommand, FakeHostOpenFailure } from "./fake-host-wire"
+export type { FakeHostCommand, FakeHostOpenFailure, FakeHostWarmAnswer } from "./fake-host-wire"
 export type { FakeHostSession } from "./fake-host-sessions"
 
 export interface FakeHostOptions extends FakeHostIdentityOptions {
@@ -28,9 +29,19 @@ export interface FakeHostOptions extends FakeHostIdentityOptions {
   readonly transcripts?: boolean
   /** What a draining generation tells a client to wait before retrying a held path. */
   readonly drainRetryAfterMs?: number
+  /** The `warm` answer; a current engine's `warmed` by default. */
+  readonly warm?: FakeHostWarmAnswer
+  /** Listen at this path (a shard socket a suite resolved) instead of a private temp one. */
+  readonly socketPath?: string
+  /**
+   * Give every session a real long-running process (a child's polling loop) that lives until the
+   * session ends on the host - closed, dropped unretained, or the host itself dying.
+   */
+  readonly sessionProcesses?: boolean
 }
 
 export interface FakeHost {
+  readonly admissions: FakeInputAdmissions
   readonly socketPath: string
   readonly commands: readonly FakeHostCommand[]
   readonly connections: number
@@ -43,18 +54,32 @@ export interface FakeHost {
   failOpen(failure: FakeHostOpenFailure | undefined): void
   /** Record the named command but never answer it - the caller's request stays in flight. */
   withholdReply(type: string): void
+  /** Answer the named command again from now on; a reply already withheld stays unanswered. */
+  allowReply(type: string): void
+  /** Queue the named command's replies until the returned release is called; release sends them all, in order. */
+  holdReply(type: string): () => void
+  /** Refuse the named command with this error from now on; `undefined` answers it normally again. */
+  failReply(type: string, error: string | undefined): void
   requestUi(routingId: string, request: Readonly<Record<string, unknown>>): void
   emitRecord(routingId: string, record: Readonly<Record<string, unknown>>): void
   /** The host loop stalled: a connection-level notice every attached client sees. */
   stall(driftMs: number): void
   /** Finish the turn in flight with an assistant answer, exactly as a real session would. */
   completeTurn(routingId: string, text: string): void
+  /**
+   * The host-side abort of a turn in flight (a user escape, a forced stop, a replaced session): the transcript
+   * gains the aborted assistant row and the session goes idle, exactly as the real host leaves it. `abortCause`
+   * names a cause the host reported (senpi's `abortCause`).
+   */
+  abortTurn(routingId: string, text?: string, abortCause?: Readonly<Record<string, unknown>>): void
   evict(sessionPath: string): void
   closeSession(routingId: string, reason: string): void
   holdPath(sessionPath: string, ownerInstanceId: string): void
   releasePath(sessionPath: string): void
   /** A newer generation takes the socket: sessions park, their paths drain, the instance rotates. */
   handoff(nextInstanceId?: string): void
+  /** Destroy every client connection while every session stays open on the host (a stall cut). */
+  cutConnections(): void
   crash(): void
   restart(): Promise<void>
   waitForCommand(type: string): Promise<FakeHostCommand>
@@ -67,15 +92,22 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
   const dir = mkdtempSync(join(tmpdir(), "dh-fake-"))
   // The logical socket path on every platform; on win32 the transport derives the named pipe and
   // the secret from it, exactly as the engine's client does, so the same session logic runs there.
-  const socketPath = join(dir, "rpc.sock")
-  const transport = fakeHostTransport(socketPath)
+  const socketPath = options.socketPath ?? join(dir, "rpc.sock")
+  // Derived inside `listen` so a restart never re-binds the address its predecessor may still hold.
+  // On win32 the pipe instance can outlive `server.close()` while a client handle lingers, so one
+  // fixed derivation makes restart race itself with EADDRINUSE. Re-deriving also rotates
+  // `<path>.secret`, which is how the real host behaves and how clients already resolve the address.
+  let transport: FakeHostTransport
   const drainRetryAfterMs = options.drainRetryAfterMs ?? 2_000
-  const table = new FakeSessionTable({ transcripts: options.transcripts === true })
+  const table = new FakeSessionTable({ transcripts: options.transcripts === true, sessionProcesses: options.sessionProcesses === true })
+  const admissions = new FakeInputAdmissions()
   const commands: FakeHostCommand[] = []
   const waiters: Array<{ readonly type: string; readonly resolve: (command: FakeHostCommand) => void }> = []
   const sockets = new Set<Socket>()
   const connectionWaiters: Array<{ readonly count: number; readonly resolve: () => void }> = []
   const withheld = new Set<string>()
+  const held = new Map<string, Array<() => void>>()
+  const failed = new Map<string, string>()
   let identity = fakeProtocolInfo(options)
   let generation = typeof identity.generation === "number" ? identity.generation : 1
   let openFailure = options.openFailure
@@ -91,7 +123,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
     }
   }
 
-  const ports = { table, identity: () => identity, openFailure: () => openFailure, enforceSessionDir: options.enforceSessionDir === true, withheld, record }
+  const ports = { table, admissions, warm: options.warm ?? { state: "warmed" as const }, identity: () => identity, openFailure: () => openFailure, enforceSessionDir: options.enforceSessionDir === true, withheld, held, failed, record }
 
   const settleConnectionWaiters = (): void => {
     for (let index = connectionWaiters.length - 1; index >= 0; index--) {
@@ -103,6 +135,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
   }
 
   const listen = async (): Promise<void> => {
+    transport = fakeHostTransport(socketPath)
     server = createServer((socket) => transport.authenticate(socket, () => {
       sockets.add(socket)
       settleConnectionWaiters()
@@ -156,6 +189,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
 
   return {
     socketPath,
+    admissions,
     commands,
     get connections() {
       return sockets.size
@@ -172,16 +206,44 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
     withholdReply: (type) => {
       withheld.add(type)
     },
+    holdReply: (type) => {
+      held.set(type, [])
+      return () => {
+        const queued = held.get(type) ?? []
+        held.delete(type)
+        for (const reply of queued) reply()
+      }
+    },
+    allowReply: (type) => {
+      withheld.delete(type)
+    },
+    failReply: (type, error) => {
+      if (error === undefined) failed.delete(type)
+      else failed.set(type, error)
+    },
     requestUi: (routingId, request) => sendTo(routingId, { type: "extension_ui_request", ...request }),
-    emitRecord: (routingId, payload) => sendTo(routingId, payload),
+    emitRecord: (routingId, payload) => {
+      if (payload["type"] === "agent_start" && (payload["sessionId"] === undefined || payload["sessionId"] === routingId)) table.setStreaming(routingId, true)
+      sendTo(routingId, payload)
+    },
     stall: (driftMs) => {
       for (const socket of [...sockets]) writeFrame(socket, { type: "host_stalled", driftMs })
     },
     completeTurn: (routingId, text) => {
       const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }
       table.appendTranscript(routingId, message)
+      table.setStreaming(routingId, false)
       sendTo(routingId, { type: "message_end", message })
       sendTo(routingId, { type: "agent_end", willRetry: false, messages: [message] })
+      sendTo(routingId, { type: "agent_idle" })
+    },
+    abortTurn: (routingId, text = "", abortCause) => {
+      const message = { role: "assistant", content: [{ type: "text", text }], stopReason: "aborted" }
+      table.appendTranscript(routingId, message)
+      table.setStreaming(routingId, false)
+      sendTo(routingId, { type: "message_end", message })
+      sendTo(routingId, { type: "agent_end", willRetry: false, messages: [message], aborted: true, abortSource: "user", ...(abortCause === undefined ? {} : { abortCause }) })
+      sendTo(routingId, { type: "agent_idle" })
     },
     evict: (sessionPath) => {
       const parked = table.park(sessionPath)
@@ -206,6 +268,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
       }
       endConnections()
     },
+    cutConnections: () => dropConnections(),
     crash: () => {
       table.clear()
       dropConnections()
@@ -228,6 +291,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
             connectionWaiters.push({ count, resolve })
           }),
     stop: async () => {
+      table.clear()
       dropConnections()
       await closeServer()
       rmSync(dir, { recursive: true, force: true })

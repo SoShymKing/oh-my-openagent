@@ -1,20 +1,33 @@
 import { log } from "@oh-my-opencode/utils"
 
 import type { RunnerOutcome } from "../in-process/child-handle"
-import { isBusyChildRejection, type RpcStreamingBehavior } from "../rpc/delivery-semantics"
-import { agentEndOutcome, exitTurnOutcome, extractAssistantText, promptFailureOutcome } from "../rpc/turn-outcome"
+import { exitTurnOutcome, promptFailureOutcome } from "../rpc/turn-outcome"
+import { createTurnSettlement, sessionIsIdle } from "../rpc/turn-settlement"
+import { createTurnWakeSources } from "../rpc/turn-wake-sources"
 import type { ChildEventListener, ChildExitOutcome, RpcTerminalAssistantMessage } from "../types"
-import {
-  classifySessionExit,
-  type SessionCloseIntent,
-  type SessionExitCause,
-  type SessionExitClassification,
-} from "./exit-mapping"
-import type { HostSessionChildHandle, HostSessionHandleOptions } from "./handle-port"
-import type { HostSessionParked } from "./session-client"
-
-/** How long `terminate()` waits for the host to acknowledge the abort before closing anyway. */
-const ABORT_GRACE_MS = 2_000
+import { classifySessionExit, type SessionCloseIntent, type SessionExitCause } from "./exit-mapping"
+import { bindHostSessionPort } from "./handle-client-binding"
+import { settleClassifiedSessionExit } from "./handle-exit"
+import type {
+  HostSessionChildHandle,
+  HostSessionHandleOptions,
+  HostSessionOpenDisposition,
+  HostSessionPort,
+} from "./handle-port"
+import { startHostHeartbeat } from "./handle-heartbeat"
+import { unresponsiveMessage } from "../rpc/heartbeat"
+import { createHandleListeners } from "./handle-listeners"
+import { createHandleRecovery } from "./handle-recovery"
+import { createHandleSessionIdentity } from "./handle-session-identity"
+import { createHandleReconciliation } from "./handle-reconciliation"
+import { createHandleStop } from "./handle-stop"
+import { createHandleTeardown } from "./handle-teardown"
+import { createHandleWaiters } from "./handle-waiters"
+import type { HostSessionParked, HostSessionReplaced } from "./session-client"
+import { extractTerminalAssistantMessage } from "./terminal-message"
+import { createInputEffects } from "../input-effects"
+import { toHostInput } from "./input-command"
+import { createInputDelivery } from "../input-delivery"
 
 /**
  * The steerable child handle over ONE daemon session: identical turn semantics to
@@ -24,13 +37,17 @@ const ABORT_GRACE_MS = 2_000
  * `terminate()` is `abort` then `close_session`, both bounded.
  */
 export function createHostSessionHandle(options: HostSessionHandleOptions): HostSessionChildHandle {
-  const { client, session, taskId, heartbeatIntervalMs, now, closeGraceMs } = options
-  const idleWaiters: Array<() => void> = []
-  const outcomeWaiters: Array<(settled: RunnerOutcome) => void> = []
-  const exitWaiters: Array<(outcome: ChildExitOutcome) => void> = []
-  const parkedListeners = new Set<(event: HostSessionParked) => void>()
+  const { taskId, heartbeatIntervalMs, now, closeGraceMs, reattach, shardEvents, transportRecovery } = options
+  // Both move on a reattach: a recovered transport is a new port, and a reopened session a new
+  // routing handle on a possibly new host generation. The session PATH is the child's identity.
+  let client: HostSessionPort = options.client
+  const identity = createHandleSessionIdentity(options.session)
+  let openDisposition: HostSessionOpenDisposition = options.openDisposition
+  const listeners = createHandleListeners({
+    onListenerError: (error) => log("senpi-task early event replay listener failed", { taskId, error: String(error) }),
+  })
+  const waiters = createHandleWaiters()
   let reachedIdle = false
-  let sessionId: string | undefined
   let finalText: string | undefined
   let turnBaseline: string | undefined
   let turnOutcome: RunnerOutcome | undefined
@@ -41,16 +58,44 @@ export function createHostSessionHandle(options: HostSessionHandleOptions): Host
   let intent: SessionCloseIntent = "running"
   let parked = false
   let detached = false
+  let tornDown = false
 
   const settleTurn = (settled: RunnerOutcome): void => {
     if (turnOutcome !== undefined) return
     turnOutcome = settled
     reachedIdle = true
-    flush(idleWaiters)
-    for (const waiter of outcomeWaiters.splice(0)) waiter(settled)
+    waiters.settleTurn(settled)
   }
 
-  client.onEvent((event) => {
+  const wakeSources = createTurnWakeSources()
+  const settlement = createTurnSettlement({
+    settle: settleTurn,
+    abortedByUser: () => abortedByUser,
+    baseline: () => turnBaseline,
+    finalText: () => finalText,
+    probe: () => client.getState(),
+    settleConfirmMs: heartbeatIntervalMs,
+    wakeSourcesLive: () => wakeSources.hasLiveWakeSources(),
+    disposed: () => tornDown,
+  })
+  let continuationState: "none" | "pending_delivery" | "awaiting_start" = "none"
+  const reconciliation = createHandleReconciliation({
+    lastInputId: () => options.inputStore?.load(taskId)?.last_effect_id,
+    port: () => client,
+    settle: (settled) => {
+      if (settled.status === "completed") finalText = settled.finalResponse
+      settleTurn(settled)
+    },
+    continuing: () => { continuationState = "pending_delivery" },
+  })
+
+  const onSessionEvent = (event: Parameters<ChildEventListener>[0]): void => {
+    // A run the child starts on its own after its turn settled (a monitor or background job woke it)
+    // is a new turn: the next outcome is that run's, never the settled one again (omo#9069).
+    if (event.type === "agent_start" && (continuationState === "awaiting_start" || turnOutcome !== undefined) && outcome === undefined) {
+      beginTurn()
+      listeners.emitSelfResumed()
+    }
     if (event.type === "message_end") {
       const terminal = extractTerminalAssistantMessage(event.message)
       if (terminal !== undefined) {
@@ -58,52 +103,55 @@ export function createHostSessionHandle(options: HostSessionHandleOptions): Host
         finalText = terminal.text ?? finalText
       }
     }
-    if (event.type === "agent_end" && event.willRetry === false) {
-      settleTurn(abortedByUser ? { status: "cancelled" } : agentEndOutcome(event, turnBaseline, finalText))
+    settlement.observe(event)
+    // The host's loose boundary parse fans every tagged record - raw `extension_event` records
+    // included - into this same funnel (see `session-wire.ts` isAgentSessionEvent).
+    if ((event as { readonly type?: string }).type === "extension_event") {
+      wakeSources.observe(event)
+      settlement.reconfirmHeld()
     }
-  })
+  }
 
-  const heartbeat = setInterval(() => {
-    if (outcome !== undefined || parked || detached) return
-    client
-      .getState()
-      .then((state) => {
-        lastSeenAt = now()
-        sessionId = state.sessionId
+  const stopHeartbeat = startHostHeartbeat({
+    taskId,
+    intervalMs: heartbeatIntervalMs,
+    paused: () => outcome !== undefined || parked || detached,
+    port: () => client,
+    onState: (state) => {
+      lastSeenAt = now()
+      identity.observeDurableId(state.sessionId)
+    },
+    onUnresponsive: () => {
+      settleTurn({ status: "error", failure: { kind: "child-unresponsive", message: unresponsiveMessage(taskId) } })
+      settleExit({ kind: "crashed", facts: { pid: undefined, code: null, signal: null, stderrTail: "child-unresponsive" } })
+      void teardown.detach().catch((error: unknown) => {
+        log("senpi-task unresponsive host child detach failed", { taskId, error: String(error) })
       })
-      .catch((error: unknown) => {
-        log("senpi-task host session heartbeat get_state failed", { taskId, error: String(error) })
-      })
-  }, heartbeatIntervalMs)
-  heartbeat.unref?.()
+    },
+  })
 
   const settleExit = (built: ChildExitOutcome): void => {
     if (outcome) return
     outcome = built
-    clearInterval(heartbeat)
-    flush(idleWaiters)
-    if (turnOutcome === undefined) settleTurn(exitTurnOutcome(built, finalText))
-    for (const waiter of exitWaiters.splice(0)) waiter(built)
+    listeners.clearActive()
+    stopHeartbeat()
+    waiters.flushIdle()
+    if (turnOutcome === undefined) settleTurn(settlement.pending() ?? exitTurnOutcome(built, finalText))
+    waiters.settleExit(built)
   }
 
   // A parked session is NOT an exit: the child keeps its status and its transcript, and the manager
   // parks the record (`rpc_detached`) until a later turn reopens the session from its JSONL.
   const park = (event: HostSessionParked): void => {
+    // A parked session is idle on the host: an outcome held for `agent_idle` is final (omo#9069).
+    const held = settlement.pending()
+    if (turnOutcome === undefined && held !== undefined) settleTurn(held)
     parked = true
-    clearInterval(heartbeat)
-    for (const listener of parkedListeners) listener(event)
+    stopHeartbeat()
+    listeners.emitParked(event)
   }
 
-  const settleClassified = (classified: SessionExitClassification): void => {
-    switch (classified.disposition) {
-      case "exit":
-        return settleExit(classified.outcome)
-      case "parked":
-        return park({ sessionId: session.routingId, sessionPath: session.sessionPath })
-      default:
-        return unreachable(classified)
-    }
-  }
+  const settleClassified = (classified: ReturnType<typeof classifySessionExit>): void => settleClassifiedSessionExit(classified, { session: identity.current(), exit: settleExit, park })
 
   /**
    * A session that ends while this child still holds it is the child's exit. Once the session was
@@ -114,14 +162,75 @@ export function createHostSessionHandle(options: HostSessionHandleOptions): Host
     settleClassified(classifySessionExit({ cause, intent }))
   }
 
-  client.onParked((event) => {
-    if (parked || detached || outcome !== undefined) return
-    park(event)
+  const stop = createHandleStop({
+    taskId, closeGraceMs, settleExit,
+    port: () => client,
+    exited: () => outcome !== undefined,
+    detached: () => detached,
+    recovering: () => recovery.recovering(),
+    markAborted: () => { abortedByUser = true },
+    intent: () => intent,
+    settleClosed: () => settleClassified(classifySessionExit({ cause: { kind: "session_closed", reason: "client_close" }, intent })),
+    waitForExit: () => waiters.waitForExit(outcome),
   })
-  client.onClosed((event) => endSession({ kind: "session_closed", reason: event.reason }))
-  void client.transportGone.then(() => endSession({ kind: "transport_gone" }))
+
+  const recovery = createHandleRecovery({
+    taskId,
+    closeGraceMs,
+    reattach,
+    events: shardEvents,
+    bound: transportRecovery,
+    // A child being closed or terminated is stopping too: a session a late reattach reopens is ended.
+    stopRequested: () => stop.requested() || intent !== "running",
+    endOnHost: stop.endOnHost,
+    stopUnreached: stop.stopUnreached,
+    recoveryEnded: (adopted) => {
+      stop.recoveryEnded(adopted)
+      if (adopted) void inputEffects.reconcile().catch(error => log("senpi-task input reconciliation failed", { taskId, error: String(error) }))
+    },
+    continueInput: (command) => inputEffects.send(command, identified => client.send(toHostInput(identified))),
+    port: () => client,
+    identity: identity.current,
+    alive: () => intent === "running" && !parked && !detached && outcome === undefined,
+    turnSettled: () => turnOutcome !== undefined || reachedIdle,
+    adopt: (next) => {
+      client = next.client
+      identity.adopt(next.session)
+      openDisposition = next.attached ? "attached" : "reopened"
+      bindHostSessionPort(client, clientBinding)
+    },
+    turnResumed: () => listeners.emitTurnResumed(),
+    reconcile: (reopened: boolean) => reconciliation.reconcile(identity.current().sessionPath, undefined, true, reopened),
+    beginContinuation: () => beginTurn(),
+    endLost: () => endSession({ kind: "transport_gone" }),
+    // Transport failures park in recovery; a prompt rejection keeps its own actionable cause.
+    continuationFailed: (error) => {
+      if (intent === "running" && !stop.requested() && !detached && outcome === undefined)
+        settleTurn(promptFailureOutcome(error))
+    },
+    park: (reason) => park({ sessionId: identity.current().routingId, sessionPath: identity.current().sessionPath, reason }),
+  })
+
+  const clientBinding = {
+    currentPort: () => client,
+    acceptsLifecycleEvent: () => !parked && !detached && outcome === undefined,
+    onEvent: (event: Parameters<ChildEventListener>[0]) => { onSessionEvent(event); listeners.emitEvent(event) },
+    onExtensionEvent: listeners.extensionEvents.publish,
+    onParked: park,
+    onClosed: (event: { readonly reason: string | undefined }) => endSession({ kind: "session_closed", reason: event.reason }),
+    onReplaced: (event: HostSessionReplaced) => listeners.emitReplaced(identity.followReplace(event)),
+    onTransportGone: recovery.onTransportGone,
+  }
+
+  bindHostSessionPort(client, clientBinding)
+
+  const inputEffects = createInputEffects({
+    taskId, store: options.inputStore,
+    send: command => recovery.issue(toHostInput(command)),
+  })
 
   const beginTurn = (): void => {
+    continuationState = continuationState === "pending_delivery" ? "awaiting_start" : "none"
     if (outcome !== undefined) return
     if (reachedIdle || turnOutcome !== undefined) {
       reachedIdle = false
@@ -130,141 +239,90 @@ export function createHostSessionHandle(options: HostSessionHandleOptions): Host
     terminalAssistantMessage = undefined
     abortedByUser = false
     turnBaseline = finalText
+    wakeSources.resetTurn()
   }
 
-  // Same queueing contract as the child-process runner: a delivery that lands mid-run is retried
-  // as followUp instead of failing the child (`rpc/delivery-semantics.ts`).
-  const deliverPrompt = async (text: string, streamingBehavior: RpcStreamingBehavior): Promise<void> => {
-    try {
-      await client.send({ type: "prompt", message: text, streamingBehavior })
-    } catch (error) {
-      if (streamingBehavior === "followUp" || !isBusyChildRejection(error)) throw error
-      await client.send({ type: "prompt", message: text, streamingBehavior: "followUp" })
-    }
-  }
+  const delivery = createInputDelivery({
+    effects: inputEffects, beginTurn, promptFailed: error => settleTurn(promptFailureOutcome(error)),
+  })
 
-  const runPrompt = async (text: string, streamingBehavior: RpcStreamingBehavior = "steer"): Promise<void> => {
-    beginTurn()
-    try {
-      await deliverPrompt(text, streamingBehavior)
-    } catch (error) {
-      settleTurn(promptFailureOutcome(error))
-      throw error
-    }
-  }
-
-  const bestEffort = (work: Promise<void>, step: string): Promise<void> =>
-    work.catch((error: unknown) => {
-      log("senpi-task host session teardown step failed", { taskId, step, error: String(error) })
-    })
-
-  // Bounded teardown: a daemon that never answers must not hold the parent's shutdown open, and a
-  // session is never ended with a signal.
-  const endOnHost = async (next: "closed" | "terminated"): Promise<void> => {
-    if (outcome !== undefined) return
-    intent = next
-    if (next === "terminated") await settleWithin(bestEffort(client.send({ type: "abort" }), "abort"), ABORT_GRACE_MS)
-    await settleWithin(bestEffort(client.close(), "close_session"), closeGraceMs)
-    // A teardown this client asked for always ends the child - including a session the daemon had
-    // parked, which the manager cancels exactly the same way.
-    const reason = next === "terminated" ? "terminated" : "client_close"
-    settleClassified(classifySessionExit({ cause: { kind: "session_closed", reason }, intent }))
-  }
-
-  const detach = async (): Promise<void> => {
-    detached = true
-    clearInterval(heartbeat)
-    await client.detach()
-  }
+  const teardown = createHandleTeardown({
+    taskId,
+    closeGraceMs,
+    port: () => client,
+    exited: () => outcome !== undefined,
+    intent: () => intent,
+    markIntent: (next) => { intent = next },
+    markDetached: () => { detached = true },
+    clearActive: listeners.clearActive,
+    stopHeartbeat: () => { inputEffects.stopRetrying(); stopHeartbeat() },
+    settle: settleClassified,
+    onTornDown: () => {
+      tornDown = true
+      settlement.cancelConfirmation()
+    },
+  })
 
   return {
+    reconcileInputs: inputEffects.reconcile,
     task_id: taskId,
     kind: "host-session",
-    hostSession: { socket: client.socketPath, ...session },
+    get hostSession() {
+      return { socket: client.socketPath, ...identity.current() }
+    },
     get sessionId() {
-      return sessionId
+      return identity.durableId()
     },
     pid: undefined,
     get attached() {
       return outcome === undefined && !parked && !detached
     },
-    steer: async (text) => {
-      beginTurn()
-      try {
-        await client.send({ type: "steer", message: text })
-      } catch (error) {
-        if (!isBusyChildRejection(error)) throw error
-        await deliverPrompt(text, "followUp")
-      }
+    get openDisposition() {
+      return openDisposition
     },
-    followUp: (text) => runPrompt(text, "followUp"),
+    getEntries: async (since) => (await recovery.currentPort()).getEntries(since),
+    switchSession: async (sessionPath) => (await recovery.currentPort()).switchSession(sessionPath),
+    steer: delivery.steer,
+    followUp: (text) => delivery.runPrompt(text, "followUp"),
+    // A child whose cancel is waiting on its lost connection is stopped by that cancel: an abort (a
+    // parent shutting down suspends it) must not wait out the whole recovery for nothing.
     abort: () => {
       abortedByUser = true
-      return client.send({ type: "abort" })
+      if (stop.requested() && recovery.recovering()) return Promise.resolve()
+      return recovery.issue({ type: "abort" })
     },
-    subscribe: (listener: ChildEventListener) => client.onEvent(listener),
-    onParked: (listener) => {
-      parkedListeners.add(listener)
-      return () => parkedListeners.delete(listener)
+    transportRecovering: () => recovery.recovering() && outcome === undefined,
+    markStopping: stop.markStopping,
+    stopWhenReachable: stop.stopWhenReachable,
+    ...listeners.registrations,
+    reconcileTurn: (record) => reconciliation.reconcile(identity.current().sessionPath, record, false, openDisposition === "reopened"),
+    onReconciled: reconciliation.subscribe,
+    adoptFinishedTurn: async (finalResponse) => {
+      if (turnOutcome !== undefined || settlement.pending() !== undefined) return
+      // A state read that fails is not proof of idleness, and must never cost the reattach: stay busy.
+      const state = await client.getState().catch(() => undefined)
+      if (state === undefined || !sessionIsIdle(state)) return
+      if (turnOutcome === undefined && settlement.pending() === undefined) settleTurn({ status: "completed", finalResponse })
     },
-    waitForIdle: () =>
-      reachedIdle || outcome ? Promise.resolve() : new Promise<void>((resolve) => idleWaiters.push(resolve)),
+    waitForIdle: () => waiters.waitForIdle(reachedIdle || outcome !== undefined),
     hasExited: () => outcome !== undefined,
-    waitForOutcome: () =>
-      turnOutcome !== undefined
-        ? Promise.resolve(turnOutcome)
-        : outcome === undefined
-          ? new Promise<RunnerOutcome>((resolve) => outcomeWaiters.push(resolve))
-          : Promise.resolve(exitTurnOutcome(outcome, finalText)),
+    // A state read that fails is not proof of idleness, and must never flag the reattach: undefined.
+    sessionIdle: async () => {
+      const state = await client.getState().catch(() => undefined)
+      if (state === undefined) return undefined
+      return sessionIsIdle(state)
+    },
+    waitForOutcome: () => waiters.waitForOutcome(turnOutcome, outcome, finalText),
     lastAssistantText: () => finalText,
     terminalAssistantMessage: () => terminalAssistantMessage,
     wasAbortedByUser: () => abortedByUser,
     lastSeen: () => lastSeenAt,
     exitOutcome: () => outcome,
-    waitForExit: () =>
-      outcome ? Promise.resolve(outcome) : new Promise<ChildExitOutcome>((resolve) => exitWaiters.push(resolve)),
-    dispose: detach,
-    detach,
-    close: () => endOnHost("closed"),
-    terminate: () => endOnHost("terminated"),
-    startInitialPrompt: (text) => runPrompt(text),
+    waitForExit: () => waiters.waitForExit(outcome),
+    dispose: teardown.detach,
+    detach: teardown.detach,
+    close: teardown.close,
+    terminate: teardown.terminate,
+    startInitialPrompt: (text) => delivery.runPrompt(text),
   }
-}
-
-/** Resolve when the work settles or the budget expires, whichever comes first. */
-function settleWithin(work: Promise<void>, budgetMs: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, budgetMs)
-    timer.unref?.()
-    void work.then(() => {
-      clearTimeout(timer)
-      resolve()
-    })
-  })
-}
-
-function flush(waiters: Array<() => void>): void {
-  for (const waiter of waiters.splice(0)) waiter()
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
-}
-
-function extractTerminalAssistantMessage(message: unknown): RpcTerminalAssistantMessage | undefined {
-  if (!isRecord(message)) return undefined
-  const record = message
-  if (record.role !== "assistant") return undefined
-  const text = extractAssistantText(record)
-  const stopReason = typeof record.stopReason === "string" ? record.stopReason : undefined
-  const errorMessage = typeof record.errorMessage === "string" ? record.errorMessage : undefined
-  return {
-    ...(text === undefined ? {} : { text }),
-    ...(stopReason === undefined ? {} : { stopReason }),
-    ...(errorMessage === undefined ? {} : { errorMessage }),
-  }
-}
-
-function unreachable(value: never): never {
-  throw new Error(`unhandled session exit classification: ${JSON.stringify(value)}`)
 }

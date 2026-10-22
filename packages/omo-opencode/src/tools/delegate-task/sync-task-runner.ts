@@ -193,6 +193,7 @@ export async function runSyncTaskLoop(input: SyncTaskRunnerInput): Promise<strin
         agentToUse,
         description: args.description,
         defaultDirectory: directory,
+        category: args.category,
         categoryModel: nextFallbackModel,
       })
       if (!retrySessionResult.ok) {

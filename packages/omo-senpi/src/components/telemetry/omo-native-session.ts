@@ -2,7 +2,6 @@ import {
   createEventTelemetryClient,
   getDailyActiveCaptureState,
   getDefaultTelemetryOsProvider,
-  getTelemetryDistinctId,
   isTelemetryClientEnabled,
   type EventTelemetryClient,
   type EventTelemetrySetTimeout,
@@ -10,7 +9,8 @@ import {
   type TelemetryEnv,
   type TelemetryOsProvider,
   type TelemetryTransportFactory,
-} from "@oh-my-opencode/telemetry-core"
+} from "@oh-my-opencode/telemetry-core/injected"
+import { createLazyPostHogTransportFactory } from "./lazy-posthog"
 import { isOmoTelemetryEnabled, type OmoConfig } from "@oh-my-opencode/omo-config-core"
 
 import { deferUntilAfterFirstPaint } from "../../extension/startup-deferral"
@@ -19,13 +19,14 @@ import { resolveAgentHome } from "../agent-home/resolve-agent-home"
 import { loadSenpiOmoConfig } from "../config-resolution"
 import { getSenpiTelemetryStateDir, recordSenpiDailyActive } from "./index"
 import { createCategoryConfigCapture } from "./omo-native-category-config"
+import { captureProcessCrashes } from "./omo-native-crash"
 import {
   OMO_NATIVE_PROPERTY_ALLOWLISTS,
   OMO_NATIVE_SCHEMA_VERSION,
   createOmoNativeProductConfig,
+  getOmoNativeAttribution,
   getOmoNativeStateDir,
   hashSessionId,
-  withOmoNativeAttribution,
 } from "./product-identity"
 import { readOmoNativeInventory, type OmoNativeInventoryDiagnostic } from "./session-inventory"
 import { resolveSessionModelRegistry } from "./session-model-registry"
@@ -64,20 +65,24 @@ export function createOmoNativeSessionComponent(options: OmoNativeSessionOptions
         if (sessionClosed) return
         const env = options.env ?? process.env
         const product = createOmoNativeProductConfig()
-        if (!isTelemetryClientEnabled({ env, product }) || !configEnabled(options, eventCtx, env)) return
+        if (!isOmoNativeTelemetryEnabled(options, eventCtx, env)) return
 
         const osProvider = options.osProvider ?? getDefaultTelemetryOsProvider()
         const sessionId = extractSessionId(eventCtx) ?? "unknown"
+        const attribution = getOmoNativeAttribution({ env, now: options.now, osProvider })
         client = createEventTelemetryClient({
           diagnostics: options.diagnostics,
-          distinctId: getTelemetryDistinctId(product.machineIdPrefix, osProvider),
+          distinctId: attribution.install_hash,
           env,
-          product: withOmoNativeAttribution(product, { env }),
+          product: { ...product, additionalProperties: { ...product.additionalProperties, ...attribution } },
           propertyAllowlist: OMO_NATIVE_PROPERTY_ALLOWLISTS,
           schemaVersion: OMO_NATIVE_SCHEMA_VERSION,
           setTimeoutFn: options.setTimeoutFn,
           source: SOURCE,
-          transportFactory: options.transportFactory,
+          transportFactory: options.transportFactory ?? createLazyPostHogTransportFactory({
+            diagnostics: options.diagnostics,
+            source: SOURCE,
+          }),
         })
         if (!client.enabled) return
 
@@ -112,6 +117,16 @@ export function createOmoNativeSessionComponent(options: OmoNativeSessionOptions
           ...(timezone === undefined ? {} : { timezone }),
           ...(inventory.defaultProvider === undefined ? {} : { default_provider: inventory.defaultProvider }),
           ...(inventory.defaultModel === undefined ? {} : { default_model: inventory.defaultModel }),
+        })
+
+        // Crashes recorded by earlier processes can only be sent by a later one: this one.
+        captureProcessCrashes({
+          captureEvent: client.captureEvent,
+          agentDir: resolveAgentHome({ env }),
+          stateDir: getOmoNativeStateDir(env),
+          osProvider,
+          ...(options.now === undefined ? {} : { now: options.now }),
+          ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
         })
 
         // The category map is only observable where BOTH the config and the live model registry are
@@ -197,7 +212,20 @@ function readTimeZone(provider: (() => string) | undefined): string | undefined 
   }
 }
 
-function configEnabled(options: OmoNativeSessionOptions, eventCtx: unknown, env: TelemetryEnv): boolean {
+/** The one enablement decision: the env opt-out matrix plus the omo config gate for the event's cwd. */
+export function isOmoNativeTelemetryEnabled(
+  options: Pick<OmoNativeSessionOptions, "diagnostics" | "isConfigEnabled">,
+  eventCtx: unknown,
+  env: TelemetryEnv,
+): boolean {
+  return isTelemetryClientEnabled({ env, product: createOmoNativeProductConfig() }) && configEnabled(options, eventCtx, env)
+}
+
+function configEnabled(
+  options: Pick<OmoNativeSessionOptions, "diagnostics" | "isConfigEnabled">,
+  eventCtx: unknown,
+  env: TelemetryEnv,
+): boolean {
   const cwd = extractString(eventCtx, "cwd")
   if (options.isConfigEnabled !== undefined) return options.isConfigEnabled(cwd, env)
   try {

@@ -110,6 +110,7 @@ export async function runSpawn(
       ...(started.resolved_model !== undefined && { resolved_model: started.resolved_model }),
       run_in_background: started.run_in_background,
       ...(started.failure_kind === undefined ? {} : { failure_kind: started.failure_kind }),
+      ...(started.failure_reason === undefined ? {} : { failure_reason: started.failure_reason }),
       reason: started.error_message,
       ...(spec.skills === undefined ? {} : { skills: spec.skills }),
     })
@@ -186,6 +187,9 @@ export async function runSpawn(
   } else {
     emit()
   }
+  const parent = deps.manager.findTaskByChildSession?.(ctx.sessionManager.getSessionId())
+  const parked = parent === undefined ? undefined : deps.manager.concurrency?.park(parent.task_id, parent.notification.run_epoch)
+  let promoted = false
   try {
     const waited = await waitForForegroundTask({
       manager: deps.manager,
@@ -196,6 +200,7 @@ export async function runSpawn(
       ...(scheduleDeadline !== undefined && { scheduleDeadline }),
     })
     if (waited.kind === "promoted") {
+      promoted = true
       return result(appendMissingSkills(
         backgroundConversionText(started, startLabels, waited.budgetSeconds),
         spec.skills,
@@ -223,5 +228,6 @@ export async function runSpawn(
     closed = true
     if (timer !== undefined) clearTimeout(timer)
     unsubscribe()
+    await deps.manager.concurrency?.unpark(parked, signal, { overflow: promoted })
   }
 }

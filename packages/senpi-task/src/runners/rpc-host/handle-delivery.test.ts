@@ -33,7 +33,7 @@ describe("host session delivery semantics", () => {
 
     // then
     expect(prompts(port.sent)).toEqual([
-      { type: "prompt", message: "do the daemon child work", streamingBehavior: "steer" },
+      { type: "prompt", message: "do the daemon child work", streamingBehavior: "steer", clientMessageId: "st_29_delivery:0:1" },
     ])
     await handle.dispose()
   })
@@ -47,7 +47,7 @@ describe("host session delivery semantics", () => {
     await handle.steer("keep going")
 
     // then
-    expect(prompts(port.sent)).toEqual([{ type: "prompt", message: "keep going", streamingBehavior: "followUp" }])
+    expect(prompts(port.sent)).toEqual([{ type: "prompt", message: "keep going", streamingBehavior: "followUp", clientMessageId: "st_29_delivery:0:2" }])
     await handle.dispose()
   })
 
@@ -95,6 +95,7 @@ describe("host session turn outcomes", () => {
     // when
     await handle.abort()
     port.emitEvent(event({ type: "agent_end", willRetry: false, messages: [] }))
+    port.emitEvent(event({ type: "agent_idle" }))
 
     // then
     expect((await handle.waitForOutcome()).status).toBe("cancelled")
@@ -122,6 +123,7 @@ describe("host session turn outcomes", () => {
       }),
     )
     port.emitEvent(event({ type: "agent_end", willRetry: false, messages: [] }))
+    port.emitEvent(event({ type: "agent_idle" }))
     await handle.waitForIdle()
 
     // then
@@ -147,6 +149,7 @@ describe("host session turn outcomes", () => {
       }),
     )
     port.emitEvent(event({ type: "agent_end", willRetry: false, messages: [] }))
+    port.emitEvent(event({ type: "agent_idle" }))
     expect(await handle.waitForOutcome()).toEqual({ status: "completed", finalResponse: "first" })
 
     // when
@@ -162,6 +165,7 @@ describe("host session turn outcomes", () => {
       }),
     )
     port.emitEvent(event({ type: "agent_end", willRetry: false, messages: [] }))
+    port.emitEvent(event({ type: "agent_idle" }))
     expect(await handle.waitForOutcome()).toEqual({ status: "completed", finalResponse: "second answer" })
     await handle.dispose()
   })
@@ -171,12 +175,14 @@ describe("host session heartbeat", () => {
   test("#given a live session #when the heartbeat interval elapses #then it reads get_state and records lastSeen", async () => {
     // given
     const port = fakeSessionPort()
-    const handle = handleOverPort(port, 1)
+    const observed = Promise.withResolvers<void>()
+    const handle = handleOverPort(port, 1, () => { observed.resolve(); return 7 })
     expect(handle.lastSeen()).toBeUndefined()
 
     // when
     await port.stateAsked()
     await port.answerState({ sessionId: "durable-routing-1" })
+    await observed.promise
 
     // then the durable session id and the liveness stamp both come from get_state
     expect(handle.lastSeen()).toBe(7)

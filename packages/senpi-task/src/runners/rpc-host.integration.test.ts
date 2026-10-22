@@ -128,6 +128,13 @@ describe("two parents on one daemon", () => {
   test("#given a daemon that died under 32 live children #when they park and it comes back #then the next session start reconciles every child", async () => {
     // given
     const { world, a, b } = await twoParents()
+    // Pin the idle branch before the crash. The revival contract splits on whether a turn was in
+    // flight: a mid-turn restart reopens and re-prompts exactly once, an idle one reopens with no
+    // prompt. `startChildren` returns once each child has STARTED, not once its opening turn has
+    // ended, so leaving that unpinned lets the platform pick the branch - it read as idle on POSIX
+    // and as mid-turn on win32, where 32 re-prompts doubled `prompts()` to 64. This test asserts
+    // the idle branch, so it has to establish it.
+    for (const session of world.host.sessions()) world.host.completeTurn(session.routingId, "done")
 
     // when - the park claims every record in THIS tick, before any crashed outcome can land
     world.host.crash()
@@ -191,13 +198,14 @@ describe("two parents on one daemon", () => {
     for (const path of paths) world.host.releasePath(path)
     const attached = await b2.lifecycle.reconcileOnSessionStart("parent-b")
 
-    // then - one session per path, one writer per JSONL, no replayed prompt
+    // then - one session per path, one writer per JSONL, one continuation per interrupted turn
     expect(of(attached.outcomes, "resumed")).toHaveLength(16)
     expect(world.host.sessions()).toHaveLength(16)
     expect(distinct(paths.map((path) => world.host.peakAttachments(path)))).toEqual([1])
     expect(distinct(b2.records().map((record) => record.host_session?.instance_id))).toEqual([world.host.instanceId])
     expect(distinct(b2.records().map((record) => record.suspension_reason))).toEqual([undefined])
-    expect(world.prompts()).toHaveLength(16)
+    expect(world.prompts()).toHaveLength(32)
+    expect(world.host.commands.filter(command => command.type === "prompt" && command.payload.streamingBehavior === "followUp")).toHaveLength(16)
   })
 })
 
@@ -233,8 +241,11 @@ describe("daemon refusals", () => {
     // when
     const [started] = await a.startChildren(1)
 
-    // then - an unusable launch profile is NOT a fallback reason: nothing runs as its own process
-    expect(started?.kind).toBe("start_failed")
+    // then - an unusable launch profile is NOT a fallback reason: nothing runs as its own process.
+    // A refusal that lands after the start report window (#10042) is reported as `starting` and the
+    // record ends `error` once the launch settles; both shapes must end the same way.
+    if (started?.kind === "started") expect(started.starting).toBe(true)
+    else expect(started?.kind).toBe("start_failed")
     expect(world.host.sessions()).toEqual([])
     expect(a.fallbackStarts).toEqual([])
     expect(a.warnings).toEqual([])

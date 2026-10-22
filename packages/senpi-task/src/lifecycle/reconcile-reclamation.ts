@@ -2,14 +2,20 @@ import type { TaskRecord } from "../state"
 import { isSpawnSpecV1 } from "../state"
 import { nowIso, TERMINAL_STATUSES, type LifecycleContext } from "./context"
 import { destroyResidentTask } from "./destroy"
+import { endClosingFallbackChild } from "./fallback-closing-child"
+import { isFallbackHandoff } from "./fallback-handoff"
+import { parkedReason, reachRecordedHost } from "./host-endpoint-reach"
 import { hostSessionResumePath, isHostSessionRecord } from "./host-session"
 import { clearSuspensionReason, markSuspensionReason } from "./host-session-record"
 import { detachTerminalResident } from "./reconcile-terminal"
-import { getLifecycleReattachPorts, type RespawnFailureCode, type RespawnPort, type RespawnResult } from "./port"
+import { getLifecycleReattachPorts, type RespawnPort, type RespawnResult } from "./port"
 import { markCrashedResident } from "./reconcile-crashed-resident"
+import { settleProvisionalExitLoss } from "./provisional-exit"
+import { finishPendingCancel } from "./pending-cancel"
 import { reclaimOrphanedResident } from "./residency"
-import { deferred, markLost, rollbackOrDeferred, terminateOldRpc, type SuspendedResidency } from "./revive-rollback"
-import type { ReconcileDeferredReason, ReconcileOutcome } from "./types"
+import { deferredCode, isSuspendingCode } from "./respawn-failure-code"
+import { deferred, disposeClaimed, markLost, rollbackOrDeferred, terminateOldRpc, type SuspendedResidency } from "./revive-rollback"
+import type { ReconcileOutcome } from "./types"
 
 export { deferred } from "./revive-rollback"
 export type { SuspendedResidency } from "./revive-rollback"
@@ -63,7 +69,7 @@ async function reclaimResidentExclusive(
   // own session dir, so preferring the record keeps a parked session from reading as transcript-less.
   const sessionPath = hostSessionResumePath(claimed) ?? sessionPathFor(claimed.task_id)
   if (TERMINAL_STATUSES.has(claimed.status) && sessionPath === undefined) {
-    context.store.transition(claimed.task_id, { type: "dispose", timestamp: nowIso(context) })
+    await destroyResidentTask(context, claimed.task_id, "target_gone")
     return {
       task_id: claimed.task_id,
       kind: "resumed",
@@ -77,6 +83,10 @@ async function reclaimResidentExclusive(
   }
   const rollbackResidency: SuspendedResidency = claimed.execution_mode === "process" ? "rpc_detached" : "persisted_only"
   if (context.config.reattach_on_reconcile === false) {
+    if ((claimed.pending_steering?.length ?? 0) > 0) {
+      await destroyResidentTask(context, claimed.task_id, "reconcile_lost")
+      return { task_id: claimed.task_id, kind: "deferred", reason: "reattach disabled; queued continuation parked" }
+    }
     const marked = await markCrashedResident(context, claimed, "reattach disabled for crashed resident")
     if (marked) await destroyResidentTask(context, claimed.task_id, "reconcile_lost")
     return { task_id: claimed.task_id, kind: "lost", reason: "reattach disabled for crashed resident" }
@@ -96,32 +106,68 @@ export async function reviveClaimed(
   sessionPath: string | undefined,
   options: ReviveClaimedOptions = {},
 ): Promise<ReconcileOutcome> {
+  if (claimed.provisional_exit !== undefined && !TERMINAL_STATUSES.has(claimed.status)) {
+    return settleProvisionalExitLoss(context, claimed)
+  }
+  if (claimed.isolation !== undefined) {
+    if (context.deferUnresumable)
+      return rollbackOrDeferred(context, claimed.task_id, rollbackResidency, "isolated_not_revivable", claimed)
+    // Never respawned - but deferring left the record non-terminal, and crash salvage only visits
+    // terminal records, so the sweep in the same startup pass reclaimed the clone with the child's
+    // unreviewed delta still inside it. Marking it lost is what the legacy respawn path already does.
+    await markLost(context, claimed, "isolated record is never respawned")
+    return { task_id: claimed.task_id, kind: "lost", reason: "isolated_not_revivable" }
+  }
   const fresh = context.store.load(claimed.task_id)
   const terminalAllowed = options.allowTerminal === true && fresh !== null && TERMINAL_STATUSES.has(fresh.status)
   // A daemon-hosted child resumes its RECORDED session path: the daemon, not the disk, owns the
-  // live transcript, so a directory scan can name the wrong file (or nothing at all).
-  const resumePath = hostSessionResumePath(fresh) ?? sessionPath
+  // live transcript, so a directory scan can name the wrong file (or nothing at all). A fallback
+  // handoff resumes nothing: its newest transcript is the failed rung's, so it launches fresh.
+  const resumePath = isFallbackHandoff(fresh) ? undefined : hostSessionResumePath(fresh) ?? sessionPath
   if (!isClaimHeld(context, fresh, claimed.parent_session_id) || fresh.killed === true || (!REVIVABLE_STATUSES.has(fresh?.status ?? "pending") && !terminalAllowed)) {
-    return rollbackOrDeferred(context, claimed.task_id, rollbackResidency, "foreign_live_owner")
+    return rollbackOrDeferred(context, claimed.task_id, rollbackResidency, "foreign_live_owner", claimed)
   }
-
-  // A host session has no pid of its own; only the child-process runner ever leaves one behind.
+  // A host session has no pid of its own; only the child-process runner ever leaves one behind. A
+  // previous process's child is ended first, a cancelled one included: finishing a cancel never leaves
+  // its process running.
   if (fresh.execution_mode === "process" && fresh.pid !== undefined && !isHostSessionRecord(fresh)) {
     const terminated = await terminateOldRpc(context, fresh)
     if (!terminated) {
-      return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable")
+      return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
     }
   }
 
-  if (isHostSessionRecord(fresh) && !(await context.hostSessionProbe.daemonAlive(fresh.host_session))) {
-    const outcome = rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "host_unreachable")
-    markSuspensionReason(context, fresh.task_id, "daemon_unavailable")
+  // An accepted cancel is final: this claim finishes it rather than running the child again. A host
+  // that does not confirm the session closed leaves the cancel pending for the next revival.
+  if (fresh.cancel_requested !== undefined && !TERMINAL_STATUSES.has(fresh.status)) {
+    const finished = await finishPendingCancel(context, fresh)
+    return finished ?? rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "host_unreachable", fresh)
+  }
+
+  if (!(await endClosingFallbackChild(context, fresh))) {
+    return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
+  }
+  // Everything above awaited: a stop or another owner that landed meanwhile ends this revival here.
+  if (!isSameClaim(context, fresh)) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "foreign_live_owner", fresh)
+
+  const reached = isHostSessionRecord(fresh) ? await reachRecordedHost(context, fresh.host_session) : "alive"
+  if (reached !== "alive") {
+    const outcome = rollbackOrDeferred(context, fresh.task_id, rollbackResidency, reached, fresh)
+    markSuspensionReason(context, fresh.task_id, parkedReason(reached))
     return outcome
+  }
+  if (context.deferUnresumable && !terminalAllowed && fresh.fallback_handoff_epoch !== fresh.notification.run_epoch
+    && ((resumePath === undefined && fresh.started_at !== undefined)
+      || (fresh.execution_mode === "in-process" && !isSpawnSpecV1Record(fresh)))) {
+    const reason = resumePath === undefined ? "transcript_unavailable" : "spawn_spec_unavailable"
+    return { ...rollbackOrDeferred(context, fresh.task_id, rollbackResidency, reason, fresh), permanent: true }
   }
 
   if (resumePath === undefined && !isSpawnSpecV1Record(fresh)) {
+    if (context.deferUnresumable)
+      return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "spawn_spec_unavailable", fresh)
     if (TERMINAL_STATUSES.has(fresh.status)) {
-      context.store.transition(fresh.task_id, { type: "dispose", timestamp: nowIso(context) })
+      disposeClaimed(context, fresh)
       return {
         task_id: fresh.task_id,
         kind: "resumed",
@@ -134,51 +180,56 @@ export async function reviveClaimed(
 
   const ports = context.reattachPorts ?? getLifecycleReattachPorts(context.store)
   if (ports === undefined) {
-    if (TERMINAL_STATUSES.has(fresh.status)) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable")
+    if (context.deferUnresumable)
+      return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
+    if (TERMINAL_STATUSES.has(fresh.status)) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
     await markLost(context, fresh, "reattach ports unavailable")
     return { task_id: fresh.task_id, kind: "lost", reason: "reattach ports unavailable" }
   }
 
   const reservation = ports.reserve(fresh)
-  if (!reservation.ok) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "capacity")
+  if (!reservation.ok) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "capacity", fresh)
   let respawned: Awaited<ReturnType<typeof ports.respawn>>
   try {
     respawned = await respawnThroughDrain(context, ports.respawn, fresh, resumePath)
   } catch (error) {
     reservation.release()
-    if (terminalAllowed) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable")
+    if (terminalAllowed || context.deferUnresumable) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
     throw error
   }
   if (!respawned.ok) {
     reservation.release()
     if (respawned.disposition === "retryable") {
-      const outcome = rollbackOrDeferred(context, fresh.task_id, rollbackResidency, deferredCode(respawned.code))
-      if (respawned.code === "host_draining") markSuspensionReason(context, fresh.task_id, "host_draining")
+      const outcome = rollbackOrDeferred(context, fresh.task_id, rollbackResidency, deferredCode(respawned.code), fresh)
+      if (isSuspendingCode(respawned.code)) markSuspensionReason(context, fresh.task_id, respawned.code)
       return outcome
     }
     if (TERMINAL_STATUSES.has(fresh.status) && options.rollbackTerminalFailure !== true) {
-      context.store.transition(fresh.task_id, { type: "dispose", timestamp: nowIso(context) })
+      disposeClaimed(context, fresh)
       return { task_id: fresh.task_id, kind: "resumed", reason: respawned.reason }
     }
-    if (TERMINAL_STATUSES.has(fresh.status)) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, deferredCode(respawned.code))
+    if (TERMINAL_STATUSES.has(fresh.status)) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, deferredCode(respawned.code), fresh)
+    if (context.deferUnresumable)
+      return { ...rollbackOrDeferred(context, fresh.task_id, rollbackResidency, deferredCode(respawned.code), fresh), permanent: true }
     await markLost(context, fresh, `reattach failed: ${respawned.reason}`)
     return { task_id: fresh.task_id, kind: "lost", reason: respawned.reason }
   }
 
   let reattached: Awaited<ReturnType<typeof ports.reattach>>
   try {
-    reattached = await ports.reattach(fresh, respawned.handle)
+    reattached = await ports.reattach(fresh, respawned.handle, respawned.ok ? respawned.awaitingInput : undefined)
   } catch (error) {
     reservation.release()
-    if (terminalAllowed) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable")
+    if (terminalAllowed || context.deferUnresumable) return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
     throw error
   }
   if (!reattached.ok) {
     reservation.release()
     if (reattached.kind === "already_attached") {
+      clearSuspensionReason(context, fresh.task_id)
       return { task_id: fresh.task_id, kind: "resumed", reason: reattached.reason }
     }
-    return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable")
+    return rollbackOrDeferred(context, fresh.task_id, rollbackResidency, "session_unavailable", fresh)
   }
   context.store.appendEvent(fresh.task_id, {
     type: "reconcile_reattached",
@@ -210,6 +261,15 @@ async function respawnThroughDrain(
   return result
 }
 
+function isSameClaim(context: LifecycleContext, claimed: TaskRecord): boolean {
+  const now = context.store.load(claimed.task_id)
+  return isClaimHeld(context, now, claimed.parent_session_id)
+    && now.killed !== true
+    && now.status === claimed.status
+    && now.notification.run_epoch === claimed.notification.run_epoch
+    && now.residency_claim === claimed.residency_claim
+}
+
 export function isOrphan(context: LifecycleContext, record: TaskRecord): boolean {
   if (record.host_pid === context.hostPid) return !hasLiveHandle(context, record.task_id)
   return record.host_pid === undefined || !context.signaller.isAlive(record.host_pid)
@@ -230,10 +290,6 @@ export function isClaimHeld(
 
 function isSpawnSpecV1Record(record: TaskRecord): boolean {
   return record.spawn_spec !== undefined && isSpawnSpecV1(record.spawn_spec)
-}
-
-function deferredCode(code: RespawnFailureCode): ReconcileDeferredReason {
-  return code === "respawn_failed" ? "session_unavailable" : code
 }
 
 export function beginLocalReclamation(context: LifecycleContext, taskId: string): (() => void) | undefined {

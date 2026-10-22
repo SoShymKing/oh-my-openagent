@@ -59,7 +59,7 @@ function buildChatParamsInput(raw: unknown): ChatParamsHookInput | null {
     : typeof model.id === "string"
       ? model.id
       : undefined
-  const providerId = provider.id
+  const providerId = isRecord(provider.info) ? provider.info.id : provider.id
   if (typeof providerID !== "string") return null
   if (typeof modelID !== "string") return null
   if (typeof providerId !== "string") return null
@@ -141,6 +141,9 @@ export function createChatParamsHandler(args: {
     const capabilities = getModelCapabilities({
       providerID: normalizedInput.model.providerID,
       modelID: normalizedInput.model.modelID,
+      runtimeModel: isRecord(normalizedInput.runtimeModel.capabilities)
+        ? normalizedInput.runtimeModel
+        : undefined,
     })
 
     const compatibility = resolveCompatibleModelSettings({

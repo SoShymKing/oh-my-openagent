@@ -219,7 +219,7 @@ describe("createEventHandler - model fallback", () => {
       {
         sessionID,
         agent: "sisyphus",
-        model: { providerID: "anthropic", modelID: "claude-opus-5" },
+        model: { providerID: "anthropic", modelID: "claude-opus-5-5" },
       },
       output,
     )
@@ -858,7 +858,7 @@ describe("createEventHandler - model fallback", () => {
     expect(promptCalls).toEqual([sessionID])
     expect(output.message["model"]).toMatchObject({
       providerID: "anthropic",
-      modelID: "claude-opus-5",
+      modelID: "claude-opus-5-5",
     })
     expect(output.message["variant"]).toBe("max")
   })
@@ -872,7 +872,7 @@ describe("createEventHandler - model fallback", () => {
     const { handler, abortCalls, promptCalls } = createHandler({ hooks: { modelFallback } })
     const chatMessageHandler = createChatFallbackMessageHandler(modelFallback)
 
-    setSessionModel(sessionID, { providerID: "anthropic", modelID: "claude-opus-5" })
+    setSessionModel(sessionID, { providerID: "anthropic", modelID: "claude-opus-5-5" })
 
     //#when
     await handler({
@@ -895,7 +895,7 @@ describe("createEventHandler - model fallback", () => {
       {
         sessionID,
         agent: "sisyphus",
-        model: { providerID: "anthropic", modelID: "claude-opus-5" },
+        model: { providerID: "anthropic", modelID: "claude-opus-5-5" },
       },
       output,
     )
@@ -1055,7 +1055,7 @@ describe("createEventHandler - model fallback", () => {
             id: "msg_user_status_idle_reset_opus5",
             sessionID,
             role: "user",
-            modelID: "claude-opus-5",
+            modelID: "claude-opus-5-5",
             providerID: "anthropic",
             agent: "Sisyphus - Ultraworker",
           },
@@ -1070,7 +1070,7 @@ describe("createEventHandler - model fallback", () => {
           status: {
             ...retryStatus.properties.status,
             message:
-              "All credentials for model claude-opus-5 are cooling down [retrying in ~5 days attempt #1]",
+              "All credentials for model claude-opus-5-5 are cooling down [retrying in ~5 days attempt #1]",
           },
         },
       },
@@ -1441,7 +1441,7 @@ describe("createEventHandler - model fallback", () => {
     const first = await triggerRetryCycle("anthropic", "claude-opus-4-8-thinking")
 
     //#then - first Opus 5 fallback entry is applied to the legacy Opus 4.8 input
-    expect(first.message["model"]).toMatchObject({ providerID: "anthropic", modelID: "claude-opus-5" })
+    expect(first.message["model"]).toMatchObject({ providerID: "anthropic", modelID: "claude-opus-5-5" })
     expect(first.message["variant"]).toBe("max")
 
     //#when - second retry cycle
@@ -1495,7 +1495,7 @@ describe("createEventHandler - model fallback", () => {
       {
         sessionID,
         agent: "sisyphus",
-        model: { providerID: "anthropic", modelID: "claude-opus-5" },
+        model: { providerID: "anthropic", modelID: "claude-opus-5-5" },
       },
       output,
     )

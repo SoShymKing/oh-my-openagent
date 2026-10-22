@@ -1,5 +1,9 @@
 import * as z from "zod"
 
+import { OMO_MEMORY_AGREEMENTS_DEFAULTS, OmoMemoryAgreementsLayerSchema, OmoMemoryAgreementsSchema } from "./memory-agreements"
+
+export * from "./memory-agreements"
+
 // ---------------------------------------------------------------------------
 // Reflection
 // ---------------------------------------------------------------------------
@@ -19,11 +23,13 @@ export const OmoMemoryReflectionSchema = z.object({
 }).strict()
 
 // ---------------------------------------------------------------------------
-// Sync + Search (unchanged)
+// Sync + Search
 // ---------------------------------------------------------------------------
 
 export const OmoMemorySyncSchema = z.object({
+  /** @deprecated No-op kept so existing configs load; the git mirror reads its URL from git config, not here. */
   remote: z.string().min(1).optional(),
+  /** Run end-to-end encrypted memory sync on this device while signed in and sync is on for the account. */
   enabled: z.boolean().default(true),
 }).strict()
 
@@ -50,6 +56,7 @@ export const OmoMemoryRecallSchema = z.object({
   sidecar_max_tokens: z.number().int().positive().default(48000),
   max_concurrent_wakes: z.number().int().positive().default(2),
   tool_budget: z.number().int().positive().default(8),
+  query_expansion: z.boolean().default(false),
 }).strict()
 
 // ---------------------------------------------------------------------------
@@ -62,12 +69,13 @@ export const OmoMemoryNudgeSchema = z.object({
 }).strict()
 
 // ---------------------------------------------------------------------------
-// Facts (category is deliberately NOT a knob: pinned "quick")
+// Facts (explicit model overrides the live session; quick remains the legacy configuration)
 // ---------------------------------------------------------------------------
 
 export const OmoMemoryFactsSchema = z.object({
   enabled: z.boolean().default(true),
   debounce_settles: z.number().int().min(1).default(4),
+  model: z.string().min(1).optional(),
 }).strict()
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,7 @@ export const OmoMemoryReflectionLayerSchema = z.object({
 }).strict()
 
 export const OmoMemorySyncLayerSchema = z.object({
+  /** @deprecated No-op; see OmoMemorySyncSchema. */
   remote: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
 }).strict()
@@ -151,6 +160,7 @@ export const OmoMemoryRecallLayerSchema = z.object({
   sidecar_max_tokens: z.number().int().positive().optional(),
   max_concurrent_wakes: z.number().int().positive().optional(),
   tool_budget: z.number().int().positive().optional(),
+  query_expansion: z.boolean().optional(),
 }).strict()
 
 export const OmoMemoryNudgeLayerSchema = z.object({
@@ -161,6 +171,7 @@ export const OmoMemoryNudgeLayerSchema = z.object({
 export const OmoMemoryFactsLayerSchema = z.object({
   enabled: z.boolean().optional(),
   debounce_settles: z.number().int().min(1).optional(),
+  model: z.string().min(1).optional(),
 }).strict()
 
 export const OmoMemoryDreamLayerSchema = z.object({
@@ -187,6 +198,20 @@ export const OmoMemoryWriteNoticeLayerSchema = z.object({
 }).strict()
 
 // ---------------------------------------------------------------------------
+// External projection limits (the <external_projection> name list); 0 disables a limit
+// ---------------------------------------------------------------------------
+
+export const OmoMemoryProjectionSchema = z.object({
+  max_entries_per_directory: z.number().int().min(0).default(40),
+  max_bytes: z.number().int().min(0).default(24576),
+}).strict()
+
+export const OmoMemoryProjectionLayerSchema = z.object({
+  max_entries_per_directory: z.number().int().min(0).optional(),
+  max_bytes: z.number().int().min(0).optional(),
+}).strict()
+
+// ---------------------------------------------------------------------------
 // Per-agent overrides (layer-shaped)
 // ---------------------------------------------------------------------------
 
@@ -198,11 +223,13 @@ export const OmoMemoryAgentOverridesSchema = z.object({
   facts: OmoMemoryFactsLayerSchema.optional(),
   dream: OmoMemoryDreamLayerSchema.optional(),
   people: OmoMemoryPeopleLayerSchema.optional(),
+  agreements: OmoMemoryAgreementsLayerSchema.optional(),
   soul: OmoMemorySoulLayerSchema.optional(),
   write_notice: OmoMemoryWriteNoticeLayerSchema.optional(),
   sync: OmoMemorySyncLayerSchema.optional(),
   search: OmoMemorySearchLayerSchema.optional(),
   recall: OmoMemoryRecallLayerSchema.optional(),
+  projection: OmoMemoryProjectionLayerSchema.optional(),
   compile_warn_tokens: z.number().int().positive().optional(),
 }).strict()
 
@@ -234,6 +261,7 @@ export const OmoMemorySettingsSchema = z.object({
     auto_select_max_chars: 150000,
   }),
   people: OmoMemoryPeopleSchema.default({ enabled: true, max_entries: 40, max_entry_chars: 200 }),
+  agreements: OmoMemoryAgreementsSchema.default(OMO_MEMORY_AGREEMENTS_DEFAULTS),
   soul: OmoMemorySoulSchema.default({ edit_notice: true }),
   write_notice: OmoMemoryWriteNoticeSchema.default({ enabled: true }),
   sync: OmoMemorySyncSchema.default({ enabled: true }),
@@ -246,7 +274,9 @@ export const OmoMemorySettingsSchema = z.object({
     sidecar_max_tokens: 48000,
     max_concurrent_wakes: 2,
     tool_budget: 8,
+    query_expansion: false,
   }),
+  projection: OmoMemoryProjectionSchema.default({ max_entries_per_directory: 40, max_bytes: 24576 }),
   compile_warn_tokens: z.number().int().positive().default(30000),
   agents: z.record(z.string(), OmoMemoryAgentOverridesSchema).default({}),
 }).strict()
@@ -259,11 +289,13 @@ export const OmoMemorySettingsLayerSchema = z.object({
   facts: OmoMemoryFactsLayerSchema.optional(),
   dream: OmoMemoryDreamLayerSchema.optional(),
   people: OmoMemoryPeopleLayerSchema.optional(),
+  agreements: OmoMemoryAgreementsLayerSchema.optional(),
   soul: OmoMemorySoulLayerSchema.optional(),
   write_notice: OmoMemoryWriteNoticeLayerSchema.optional(),
   sync: OmoMemorySyncLayerSchema.optional(),
   search: OmoMemorySearchLayerSchema.optional(),
   recall: OmoMemoryRecallLayerSchema.optional(),
+  projection: OmoMemoryProjectionLayerSchema.optional(),
   compile_warn_tokens: z.number().int().positive().optional(),
   agents: z.record(z.string(), OmoMemoryAgentOverridesSchema).optional(),
 }).strict()
