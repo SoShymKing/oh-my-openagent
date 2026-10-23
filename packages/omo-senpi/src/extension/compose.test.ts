@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, jest, spyOn } from "bun:test"
 
-import { enableFakeExtensionEvents, emitFakeExtensionEvent, FakeExtensionAPI } from "../../test-support/fake-extension-api"
+import { enableFakeExtensionEvents, FakeExtensionAPI } from "../../test-support/fake-extension-api"
 import { composeOmoSenpiExtension } from "./compose"
 import { IdleInjectionRetiredError, type IdleInjectionCoordinator } from "./idle-injection-coordinator"
 import type { ComponentLogger, OmoSenpiComponent } from "./types"
@@ -67,7 +67,7 @@ describe("composeOmoSenpiExtension", () => {
       send: () => { dispatched = pi.dispatch("input", payload, ctx) },
     }
 
-    // When Tau submits through the common boundary.
+    // When an external producer submits through the common boundary.
     pi.events?.emit("omo:send-user-input", request)
     await dispatched
 
