@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const PATCH_SCRIPT = join(PACKAGE_ROOT, "bin", "senpi-patch.mjs")
@@ -42,6 +43,7 @@ function createFixture(claudeCodeVersion: string, layout: Layout = "bundled"): F
   const installRoot = layout === "bun-store" ? join(scratch, "node_modules", ".bun", "senpi@test") : scratch
   const root = layout === "bundled" ? scratch : join(installRoot, "node_modules", "@code-yeongyu", "senpi")
   mkdirSync(root, { recursive: true })
+  writeQuestionFixture(root)
   writeFileSync(join(root, "package.json"), JSON.stringify({
     name: "@code-yeongyu/senpi",
     version: "2026.9.2",
@@ -69,6 +71,7 @@ function bundledChunkSources(claudeCodeVersion: string): Record<string, string> 
 }
 
 function writeEngineBundle(root: string, files: Record<string, string>): void {
+  writeQuestionFixture(root, { bundled: true })
   for (const [relative, source] of Object.entries(files)) {
     const path = join(root, ENGINE_BUNDLE, relative)
     mkdirSync(dirname(path), { recursive: true })

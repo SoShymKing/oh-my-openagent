@@ -4,14 +4,18 @@ import { floorClaudeCodeVersion } from "./claude-code-floor.js"
 import { prepareCompileSafeEngine } from "./compile-safe-engine.js"
 import { LAUNCH_SPEC_FILENAME, normalizeLaunchSpecMode } from "./launch-spec-mode.js"
 import { prepareRpcStreamErrors } from "./rpc-stream-errors.js"
+import { planQuestionControl, prepareQuestionControl } from "./question-control.js"
 
 // Written inside the engine tree, so reinstalling or upgrading the engine drops it with the tree.
 export const ENGINE_PREPARED_STAMP = ".omo-engine-prepared"
 
 export function prepareInstalledEngine(senpiRoot) {
+  // An incompatible question owner must fail before any of the shared preparations write.
+  planQuestionControl(senpiRoot)
   floorClaudeCodeVersion(senpiRoot)
   prepareCompileSafeEngine(senpiRoot)
   prepareRpcStreamErrors(senpiRoot)
+  prepareQuestionControl(senpiRoot)
 }
 
 export function writeEnginePreparedStamp(senpiRoot, omoVersion) {
@@ -44,8 +48,13 @@ export function preparePluginLaunchSpec({ pluginRoot, report = (line) => { proce
 }
 
 export function ensureEnginePrepared({ senpiRoot, omoVersion, reinstallCommand, report = (line) => { process.stderr.write(line) } }) {
-  if (isPreparedFor(senpiRoot, omoVersion)) return
   try {
+    if (isPreparedFor(senpiRoot, omoVersion)) {
+      // The package version can stay the same in a feature checkout. Revalidate the facade,
+      // including a tree stamped by an older preparation with no question support.
+      prepareQuestionControl(senpiRoot)
+      return
+    }
     prepareInstalledEngine(senpiRoot)
     writeEnginePreparedStamp(senpiRoot, omoVersion)
   } catch (error) {

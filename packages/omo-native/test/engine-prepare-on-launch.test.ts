@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { ENGINE_PREPARED_STAMP, ensureEnginePrepared } from "../bin/lib/engine-prepare.js"
+import { writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const PI_AI_MESSAGES = "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js"
 const RPC_MODE = "dist/modes/rpc/rpc-mode.js"
@@ -18,6 +19,7 @@ function uaSource(version: string): string {
 function createEngine(uaVersion: string): string {
   const root = mkdtempSync(join(tmpdir(), "omo-engine-prepare-"))
   roots.push(root)
+  writeQuestionFixture(root)
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@code-yeongyu/senpi", version: "2026.9.23", type: "module" }))
   const rpcPath = join(root, RPC_MODE)
   mkdirSync(dirname(rpcPath), { recursive: true })

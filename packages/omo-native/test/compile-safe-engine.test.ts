@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { prepareCompileSafeEngine } from "../bin/lib/compile-safe-engine.js"
+import { writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const PATCH_SCRIPT = join(PACKAGE_ROOT, "bin", "senpi-patch.mjs")
@@ -140,6 +141,7 @@ describe("compile-safe engine preparation", () => {
     describe("#when the installed engine still resolves css-tree data dynamically", () => {
       test("#then the script prepares css-tree along with the pi-ai floor", () => {
         const root = createEngine()
+        writeQuestionFixture(root)
         write(
           join(root, "node_modules", "@earendil-works", "pi-ai", "dist", "api", "anthropic-messages.js"),
           'const claudeCodeVersion = "2.1.251";\n',
