@@ -1,6 +1,7 @@
 import type { SkillInvocationState } from "@oh-my-opencode/senpi-task"
 
 import type { SenpiExtensionAPI } from "../../extension/types"
+import { explicitSkillInvocations } from "../../extension/skill-invocations"
 import {
   depositSessionHandoff,
   discardSessionHandoff,
@@ -31,7 +32,6 @@ export type SkillInvocationTracker = {
   readonly stateFor: (sessionId: string) => SkillInvocationState
 }
 
-const SKILL_COMMAND_PREFIX = "/skill:"
 // senpi expands `/skill:<name>` into this block BEFORE the input event fires, so the raw prefix
 // almost never survives to a handler. Match the NAME ATTRIBUTE: keying off the body would let any
 // other skill that merely mentions "ulw-plan" arm the gate by accident.
@@ -161,15 +161,11 @@ export function createSkillInvocationTracker(pi: SenpiExtensionAPI): SkillInvoca
     const text = event.text
     const sessionId = extractSessionId(eventCtx)
     adoptHandoff(sessionId)
-    if (text.startsWith(SKILL_COMMAND_PREFIX)) {
-      // Mirror senpi's parse (see the ultrawork component): the skill name runs to the first space.
-      const spaceIndex = text.indexOf(" ")
-      const skill = (
-        spaceIndex === -1 ? text.slice(SKILL_COMMAND_PREFIX.length) : text.slice(SKILL_COMMAND_PREFIX.length, spaceIndex)
-      ).trim()
+    const userText = stripInjectedBlocks(text)
+    const explicitSkills = explicitSkillInvocations(userText)
+    for (const { name: skill } of explicitSkills) {
       record(invokedBySession, sessionId, skill)
       record(requestedBySession, sessionId, skill)
-      return
     }
     // The expanded form of that same command: the user picked the skill, so it counts as both an
     // invocation (forbids channel) and a request (requires channel), keyed on the name attribute.
@@ -177,7 +173,10 @@ export function createSkillInvocationTracker(pi: SenpiExtensionAPI): SkillInvoca
       record(invokedBySession, sessionId, skill)
       record(requestedBySession, sessionId, skill)
     }
-    const visible = stripInjectedBlocks(text)
+    const visible = explicitSkills.reduceRight(
+      (remaining, skill) => remaining.slice(0, skill.start) + remaining.slice(skill.end),
+      userText,
+    )
     for (const [skill, pattern] of Object.entries(USER_REQUEST_PATTERNS)) {
       if (pattern.test(visible)) record(requestedBySession, sessionId, skill)
     }

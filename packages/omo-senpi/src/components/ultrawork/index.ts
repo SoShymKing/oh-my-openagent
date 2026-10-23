@@ -2,6 +2,7 @@ import { isGpt6AstraModel } from "@oh-my-opencode/model-core"
 import { readSessionRole, type SessionRole } from "@oh-my-opencode/senpi-task"
 
 import { transformContextText } from "../../extension/context-text-transform"
+import { explicitSkillInvocations } from "../../extension/skill-invocations"
 import type { ComponentContext, OmoSenpiComponent, SenpiExtensionAPI } from "../../extension/types"
 import {
   maskNegatedInvocations,
@@ -21,7 +22,6 @@ const ULTRAWORK_CURRENT_PROMPT_PATTERN = new RegExp(String.raw`${NOT_AFTER_IDENT
 const ULTRAWORK_DISABLED_FLAG = "omo-senpi-ultrawork-disabled"
 const ULTRAWORK_MODE_OPEN_TAG = "<ultrawork-mode>"
 const ULTRAWORK_MODE_CLOSE_TAG = "</ultrawork-mode>"
-const SKILL_COMMAND_PREFIX = "/skill:"
 const ULTRAWORK_SKILL_NAME = "ultrawork"
 const ULTRAWORK_CUSTOM_TYPE = "omo-ultrawork:directive"
 
@@ -247,16 +247,14 @@ export function classifyUltraworkInput(
   }
 
   let route: UltraworkRoute = "direct"
-  if (input.text.startsWith(SKILL_COMMAND_PREFIX)) {
-    const spaceIndex = input.text.indexOf(" ")
-    const skillName =
-      spaceIndex === -1 ? input.text.slice(SKILL_COMMAND_PREFIX.length) : input.text.slice(SKILL_COMMAND_PREFIX.length, spaceIndex)
-    if (skillName === ULTRAWORK_SKILL_NAME) {
+  const skills = explicitSkillInvocations(input.text)
+  if (skills.length > 0) {
+    if (skills.some((skill) => skill.name === ULTRAWORK_SKILL_NAME)) {
       return { ...base, effective: false, stage: "none", route: "skill_expansion", suppressionReason: "skill_expansion" }
     }
 
-    const argsStart = spaceIndex === -1 ? input.text.length : spaceIndex + 1
-    const matchedInArgs = matches.some((match) => (match.index ?? -1) >= argsStart)
+    const matchedInArgs = matches.some((match) =>
+      !skills.some((skill) => match.index >= skill.start && match.index < skill.end))
     if (!matchedInArgs) {
       return { ...base, effective: false, stage: "none", route: "none", suppressionReason: "skill_name_only" }
     }
