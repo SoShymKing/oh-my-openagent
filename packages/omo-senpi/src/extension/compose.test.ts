@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, jest, spyOn } from "bun:test"
 
-import { FakeExtensionAPI } from "../../test-support/fake-extension-api"
+import { enableFakeExtensionEvents, emitFakeExtensionEvent, FakeExtensionAPI } from "../../test-support/fake-extension-api"
 import { composeOmoSenpiExtension } from "./compose"
 import { IdleInjectionRetiredError, type IdleInjectionCoordinator } from "./idle-injection-coordinator"
 import type { ComponentLogger, OmoSenpiComponent } from "./types"
@@ -47,6 +47,37 @@ function createRecordingLogger(): ComponentLogger & { entries: Array<{ level: st
 }
 
 describe("composeOmoSenpiExtension", () => {
+  it("attributes external input for components registered through the current composition", async () => {
+    // Given ordinary component input handlers in the real composition root.
+    const pi = new FakeExtensionAPI()
+    enableFakeExtensionEvents(pi)
+    const observed: unknown[] = []
+    await composeOmoSenpiExtension([{
+      name: "input-observer",
+      register(api) {
+        api.on("input", (payload) => { observed.push(payload) })
+      },
+    }], { logger: createRecordingLogger(), env: {} })(pi)
+    const ctx = { sessionManager: { getSessionId: () => "host" } }
+    await pi.dispatch("session_start", {}, ctx)
+    const payload = { type: "input", inputId: "host:1", source: "extension", text: "ulw" }
+    let dispatched: Promise<unknown> | undefined
+    const request = {
+      sessionId: "host", handled: false,
+      send: () => { dispatched = pi.dispatch("input", payload, ctx) },
+    }
+
+    // When Tau submits through the common boundary.
+    pi.events?.emit("omo:send-user-input", request)
+    await dispatched
+
+    // Then current component hooks see human provenance, without mutating the host.
+    expect(request.handled).toBe(true)
+    expect(observed).toEqual([{ ...payload, source: "rpc" }])
+    expect(payload.source).toBe("extension")
+    await pi.dispatch("session_shutdown", {}, ctx)
+  })
+
   it("#given enabled components #when composed and an event dispatches #then registers flags components and drives fake handlers", async () => {
     // given
     const pi = new FakeExtensionAPI()
