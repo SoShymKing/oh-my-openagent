@@ -2,6 +2,7 @@
 import { readSessionRole } from "@oh-my-opencode/senpi-task"
 
 import type { ComponentContext, OmoSenpiComponent, SenpiExtensionAPI } from "../../extension/types"
+import { explicitSkillInvocations } from "../../extension/skill-invocations"
 import { getBuiltinSkillsRoot } from "../telemetry/product-identity"
 import { resolveUlwLoopSessionScope } from "../ulw-loop/session-scope"
 import { NOT_AFTER_IDENTIFIER, NOT_BEFORE_PATH, NOT_INTO_IDENTIFIER, stripQuotedRegions } from "./strip-quoted-regions"
@@ -13,8 +14,6 @@ export const ULW_RESEARCH_CUSTOM_TYPE = "omo-ulw-research:skill-pointer"
 export const BROWSER_CUSTOM_TYPE = "omo-browser:skill-pointer"
 export const ULTIMATE_BROWSING_CUSTOM_TYPE = "omo-ultimate-browsing:skill-pointer"
 export const SKILL_POINTERS_DISABLED_FLAG = "omo-senpi-skill-pointers-disabled"
-
-const SKILL_COMMAND_PREFIX = "/skill:"
 
 interface SkillPointerTarget {
   readonly skillName: string
@@ -160,10 +159,10 @@ function handleInput(
 
   // Structural dedup keys on the injected markup itself, so it reads the RAW text; only the keyword
   // test runs against the text with quoted and relayed regions removed.
-  const commandSkillName = skillCommandName(payload.text)
+  const commandSkills = new Set(explicitSkillInvocations(payload.text).map((skill) => skill.name))
   const visible = stripQuotedRegions(payload.text)
   const alreadyLoaded = (skillName: string, expandedBlockPattern: RegExp): boolean =>
-    skillName === commandSkillName || expandedBlockPattern.test(payload.text)
+    commandSkills.has(skillName) || expandedBlockPattern.test(payload.text)
   const invoked = TARGETS.filter((target) => target.pattern.test(visible))
   const pointers: SkillPointerMessage[] = invoked
     .filter((target) => !alreadyLoaded(target.skillName, target.expandedBlockPattern))
@@ -216,15 +215,6 @@ function skillPointer(target: SkillPointerTarget, sessionScope: string | null): 
 function companionPointer(parent: SkillPointerTarget, companion: SkillCompanion): string {
   const skillsRoot = getBuiltinSkillsRoot()
   return `<omo-${companion.skillName}-pointer>${parent.skillName} ${companion.role}. If the user of this session is asking to run ${parent.skillName}, read the ${companion.skillName} skill at ${skillsRoot}${companion.skillName}/SKILL.md with the read tool in the same turn as the ${parent.skillName} skill and ${companion.instruction}. If ${parent.skillName} is only being discussed, quoted, or relayed from another session, ignore this pointer.</omo-${companion.skillName}-pointer>`
-}
-
-function skillCommandName(text: string): string | undefined {
-  if (!text.startsWith(SKILL_COMMAND_PREFIX)) {
-    return undefined
-  }
-
-  const spaceIndex = text.indexOf(" ")
-  return spaceIndex === -1 ? text.slice(SKILL_COMMAND_PREFIX.length) : text.slice(SKILL_COMMAND_PREFIX.length, spaceIndex)
 }
 
 function isSenpiInputEvent(value: unknown): value is SenpiInputEvent {
