@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stockLinkTarget } from "./bun-bin-shim.test-support"
+import { writeQuestionFixture } from "./question-control.fixture.mjs"
 
 export const SOURCE_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const roots: string[] = []
@@ -140,6 +141,7 @@ export function stageInstalledPackage(fixture: Fixture): void {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
   writeFileSync(manifestPath, JSON.stringify({ ...manifest, scripts: { postinstall: shipped.scripts.postinstall } }))
   const senpiRoot = join(fixture.packageRoot, "node_modules", "@code-yeongyu", "senpi")
+  writeQuestionFixture(senpiRoot)
   const rpcMode = join(senpiRoot, "dist", "modes", "rpc", "rpc-mode.js")
   mkdirSync(dirname(rpcMode), { recursive: true })
   writeFileSync(rpcMode, readFileSync(new URL("./modes/rpc/rpc-mode.js", import.meta.resolve("@code-yeongyu/senpi")), "utf8"))

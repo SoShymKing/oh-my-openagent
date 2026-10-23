@@ -38,6 +38,7 @@ import {
 import { desktopEngineTarget, stageCompiledDesktopEngine } from "./release-desktop-engine-target"
 import { EMBEDDED_PAYLOAD_ROOT, RUNTIME_MANIFEST_REL_PATH } from "./embedded-payload-naming"
 import { reportEmbeddedPayload } from "./embedded-payload-probe"
+import { prepareInstalledEngine } from "../packages/omo-native/bin/lib/engine-prepare.js"
 
 export { compileDefinesForOmoBinary, reportEmbeddedPayload }
 export type { EmbeddedPayloadReport } from "./embedded-payload-probe"
@@ -583,6 +584,9 @@ export async function buildReleaseBinary(
   if (!existsSync(compileEntry)) {
     throw new Error(`compile entry is missing: ${compileEntry}`)
   }
+  // Direct feature/release builds need the same prepared graph as postinstall and engine swaps.
+  // Do this before staging or bundling either the terminal entry or session workers.
+  prepareInstalledEngine(senpiPackageDir)
   const outDir = options.outDir ?? join(repoRoot, ".omo", "release-binaries")
   const workRoot = mkdtempSync(join(tmpdir(), `omo-binary-${target.target}-`))
   try {

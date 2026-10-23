@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 import { guardedSerialization, serialization } from "../bin/lib/rpc-stream-errors.js"
+import { writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const engineEntry = import.meta.resolve("@code-yeongyu/senpi")
 // senpi ships no source maps (senpi#2362), and postinstall may already have prepared the installed JS.
@@ -65,6 +66,7 @@ function renameShutdown(source) {
 function engineFixture(source = rpcSource) {
   const root = mkdtempSync(join(tmpdir(), "rpc-serializer-test-"))
   roots.push(root)
+  writeQuestionFixture(root)
   const rpcPath = join(root, "dist", "modes", "rpc", "rpc-mode.js")
   mkdirSync(join(root, "dist", "modes", "rpc"), { recursive: true })
   writeFileSync(rpcPath, source)
