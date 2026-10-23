@@ -7,7 +7,7 @@ import {
   FakeExtensionAPI,
   fakeExtensionEventHandlerCount,
 } from "../../test-support/fake-extension-api"
-import { installBrowserUserInputBridge, type BrowserUserInputRequest } from "./browser-user-input"
+import { installExternalUserInputApi, type ExternalUserInputRequest } from "./external-user-input"
 
 const EVENT = "omo:send-user-input"
 const context = (id: string) => ({ sessionManager: { getSessionId: () => id } })
@@ -18,20 +18,20 @@ const input = (inputId: string) => ({
 async function createSession(id = "host") {
   const pi = new FakeExtensionAPI()
   enableFakeExtensionEvents(pi)
-  installBrowserUserInputBridge(pi)
+  installExternalUserInputApi(pi)
   await pi.dispatch("session_start", {}, context(id))
   return pi
 }
 
 function send(pi: FakeExtensionAPI, action: () => Promise<unknown>, sessionId = "host") {
   let result: Promise<unknown> | undefined
-  const request: BrowserUserInputRequest = { sessionId, send: () => { result = action() } }
+  const request: ExternalUserInputRequest = { sessionId, send: () => { result = action() } }
   pi.events?.emit(EVENT, request)
   return { request, result }
 }
 
-describe("explicit browser input attribution", () => {
-  it("preserves the actual event fields while classifying browser input for every handler", async () => {
+describe("explicit external input attribution", () => {
+  it("preserves the actual event fields while classifying external input for every handler", async () => {
     // Given native input handlers and image/queue metadata.
     const pi = await createSession()
     const observed: unknown[] = []
@@ -49,7 +49,7 @@ describe("explicit browser input attribution", () => {
     expect(payload.source).toBe("extension")
   })
 
-  it("keeps ordinary extensions suppressed even if their text equals a browser submission", async () => {
+  it("keeps ordinary extensions suppressed even if their text equals a external submission", async () => {
     // Given a source-recording handler.
     const pi = await createSession()
     const observed: unknown[] = []
@@ -83,8 +83,18 @@ describe("explicit browser input attribution", () => {
       await Promise.resolve()
       return pi.dispatch("input", input("host:1"), context("host"))
     })
-    await entered.promise
-    barrier.resolve()
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        entered.promise,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("Input hook did not reach its barrier")), 2_000)
+        }),
+      ])
+    } finally {
+      clearTimeout(timeout)
+      barrier.resolve()
+    }
     const results = await submitted.result
     await transformed.promise
 
@@ -94,7 +104,7 @@ describe("explicit browser input attribution", () => {
   }, 5000)
 
   it("does not attribute later programmatic inputs inheriting the same async context", async () => {
-    // Given one explicit browser submission.
+    // Given one explicit external submission.
     const pi = await createSession()
     const observed: unknown[] = []
     pi.on("input", (payload) => { observed.push(payload) })
@@ -109,7 +119,7 @@ describe("explicit browser input attribution", () => {
     expect(observed).toEqual([{ ...input("host:1"), source: "rpc" }, input("host:2")])
   })
 
-  it("isolates overlapping browser submissions", async () => {
+  it("isolates overlapping external submissions", async () => {
     // Given two host preflight barriers.
     const pi = await createSession()
     const first = Promise.withResolvers<void>()
@@ -134,7 +144,7 @@ describe("explicit browser input attribution", () => {
     const pi = await createSession("first")
     const second = new FakeExtensionAPI()
     second.events = pi.events
-    installBrowserUserInputBridge(second)
+    installExternalUserInputApi(second)
     await second.dispatch("session_start", {}, context("second"))
     const observed: unknown[] = []
     second.on("input", (payload) => { observed.push(payload) })
@@ -148,7 +158,7 @@ describe("explicit browser input attribution", () => {
     expect(observed).toEqual([{ ...input("second:1"), source: "rpc" }])
   })
 
-  it("leaves unmatched requests available for Tau's normal fallback", async () => {
+  it("leaves unmatched requests available for the producer's normal fallback", async () => {
     // Given a live session.
     const pi = await createSession()
     let calls = 0
@@ -223,7 +233,7 @@ describe("explicit browser input attribution", () => {
     const nativeOn = pi.on
 
     // When the optional bridge installs.
-    installBrowserUserInputBridge(pi)
+    installExternalUserInputApi(pi)
 
     // Then the normal host registration remains unchanged.
     expect(pi.on).toBe(nativeOn)

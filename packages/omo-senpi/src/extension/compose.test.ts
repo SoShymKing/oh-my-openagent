@@ -47,7 +47,7 @@ function createRecordingLogger(): ComponentLogger & { entries: Array<{ level: st
 }
 
 describe("composeOmoSenpiExtension", () => {
-  it("attributes browser input for components registered through the current composition", async () => {
+  it("attributes external input for components registered through the current composition", async () => {
     // Given ordinary component input handlers in the real composition root.
     const pi = new FakeExtensionAPI()
     enableFakeExtensionEvents(pi)
@@ -67,7 +67,7 @@ describe("composeOmoSenpiExtension", () => {
       send: () => { dispatched = pi.dispatch("input", payload, ctx) },
     }
 
-    // When Tau submits through the common boundary.
+    // When an external producer submits through the common boundary.
     pi.events?.emit("omo:send-user-input", request)
     await dispatched
 

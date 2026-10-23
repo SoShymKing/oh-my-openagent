@@ -17,7 +17,7 @@ import { createOmoNativePromptComponent } from "../components/telemetry/omo-nati
 import { createUlwExecuteContinuationComponent } from "../components/ulw-execute-continuation"
 import { createUlwLoopComponent } from "../components/ulw-loop"
 import { activeStatus } from "../components/ulw-loop/ulw-loop.test-support"
-import { installBrowserUserInputBridge } from "./browser-user-input"
+import { installExternalUserInputApi } from "./external-user-input"
 import type { ComponentContext } from "./types"
 
 const roots: string[] = []
@@ -60,13 +60,13 @@ class InputChainAPI extends MemoryFakeExtensionAPI {
 }
 
 function fixture() {
-  const cwd = mkdtempSync(join(tmpdir(), "senpi-browser-input-"))
+  const cwd = mkdtempSync(join(tmpdir(), "senpi-external-input-"))
   roots.push(cwd)
   const sessionId = randomUUID()
   const ctx = { cwd, sessionManager: { getSessionId: () => sessionId, getEntries: () => [] } }
   const pi = new InputChainAPI()
   enableFakeExtensionEvents(pi)
-  installBrowserUserInputBridge(pi)
+  installExternalUserInputApi(pi)
   return { pi, ctx, cwd, sessionId }
 }
 
@@ -87,11 +87,11 @@ function submit<T>(
   }
   emitFakeExtensionEvent(pi, "omo:send-user-input", request)
   expect(request.handled).toBe(true)
-  if (pending === undefined) throw new Error("Browser send was not dispatched by the bridge")
+  if (pending === undefined) throw new Error("External send was not dispatched by the bridge")
   return pending
 }
 
-function browserInput(
+function externalInput(
   pi: InputChainAPI,
   ctx: ReturnType<typeof fixture>["ctx"],
   payload: ReturnType<typeof input>,
@@ -152,9 +152,9 @@ async function bounded<T>(promise: Promise<T>, signal: string): Promise<T> {
   }
 }
 
-describe("browser input provenance through real consumers", () => {
+describe("external input provenance through real consumers", () => {
   test.each(["ulw plan the change", "make a work plan before coding"])(
-    "unlocks the real plan guard only after a browser request and artifact: %s",
+    "unlocks the real plan guard only after a external request and artifact: %s",
     async (requestText) => {
       // given
       const { pi, ctx, cwd, sessionId } = fixture()
@@ -169,7 +169,7 @@ describe("browser input provenance through real consumers", () => {
       expect(tracker.stateFor(sessionId).hasUserRequested("ulw-plan")).toBe(false)
       expect(verdicts()).toEqual(["deny", "deny"])
 
-      await browserInput(pi, ctx, input("requested", requestText))
+      await externalInput(pi, ctx, input("requested", requestText))
       expect(tracker.stateFor(sessionId).hasUserRequested("ulw-plan")).toBe(true)
       expect(verdicts()).toEqual(["deny", "deny"])
       await touch(pi, ctx, join(cwd, ".omo", "plans", "task.md"))
@@ -177,7 +177,7 @@ describe("browser input provenance through real consumers", () => {
       // then
       expect(verdicts()).toEqual(["allow", "allow"])
       await touch(pi, ctx, join(cwd, "skills", "ulw-execute", "SKILL.md"))
-      await browserInput(pi, ctx, input("requested-again", requestText))
+      await externalInput(pi, ctx, input("requested-again", requestText))
       expect(verdicts()).toEqual(["deny", "deny"])
       await pi.dispatch("session_shutdown", { type: "session_shutdown" }, ctx)
     },
@@ -192,7 +192,7 @@ describe("browser input provenance through real consumers", () => {
 
     // when
     await pi.dispatch("input", input("ordinary", "/skill:ulw-plan plan this"), ctx)
-    await browserInput(pi, ctx, input("unrelated", "fix the login bug"))
+    await externalInput(pi, ctx, input("unrelated", "fix the login bug"))
 
     // then
     expect(tracker.stateFor(sessionId).hasUserRequested("ulw-plan")).toBe(false)
@@ -200,17 +200,17 @@ describe("browser input provenance through real consumers", () => {
     await pi.dispatch("session_shutdown", { type: "session_shutdown" }, ctx)
   })
 
-  test("a browser execution skill alias closes an already unlocked plan guard", async () => {
+  test("a external execution skill alias closes an already unlocked plan guard", async () => {
     // given
     const { pi, ctx, cwd, sessionId } = fixture()
     const tracker = createSkillInvocationTracker(pi)
     await pi.dispatch("session_start", { type: "session_start" }, ctx)
-    await browserInput(pi, ctx, input("plan", "ulw plan the change"))
+    await externalInput(pi, ctx, input("plan", "ulw plan the change"))
     await touch(pi, ctx, join(cwd, ".omo", "plans", "task.md"))
     expect(evaluateInvocationGuard("plan-reviewer", tracker.stateFor(sessionId)).kind).toBe("allow")
 
     // when
-    await browserInput(pi, ctx, input("execute", "$skill:ulw-execute"))
+    await externalInput(pi, ctx, input("execute", "$skill:ulw-execute"))
 
     // then
     expect(tracker.stateFor(sessionId).hasInvoked("ulw-execute")).toBe(true)
@@ -219,21 +219,21 @@ describe("browser input provenance through real consumers", () => {
   })
 
   test.each([undefined, "steer", "followUp"] as const)(
-    "skill pointers deliver browser requests atomically in %s mode",
+    "skill pointers deliver external requests atomically in %s mode",
     async (streamingBehavior) => {
       // given
       const { pi, ctx, sessionId } = fixture()
       await createSkillPointersComponent().register(pi, componentContext)
       const tracker = createSkillInvocationTracker(pi)
       await pi.dispatch("session_start", { type: "session_start" }, ctx)
-      const payload = input("browser-plan", "ulw plan the change", { streamingBehavior })
+      const payload = input("external-plan", "ulw plan the change", { streamingBehavior })
 
       // when
       expect(transforms(await pi.dispatch("input", input("ordinary", payload.text, {
         streamingBehavior,
       }), ctx))).toEqual([])
       expect(pi.messages).toEqual([])
-      const changed = transforms(await browserInput(pi, ctx, payload))
+      const changed = transforms(await externalInput(pi, ctx, payload))
 
       // then
       expect(tracker.stateFor(sessionId).hasUserRequested("ulw-plan")).toBe(true)
@@ -252,7 +252,7 @@ describe("browser input provenance through real consumers", () => {
   )
 
   test.each(["ulw-execute", "ulw-loop"] as const)(
-    "browser input resets the %s cap and stale state, but extension input does not",
+    "external input resets the %s cap and stale state, but extension input does not",
     async (workflow) => {
       // given
       const { pi, ctx, cwd, sessionId } = fixture()
@@ -275,14 +275,14 @@ describe("browser input provenance through real consumers", () => {
       expect(pi.messages).toHaveLength(8)
 
       // when
-      const changed = transforms(await browserInput(pi, ctx, input("queued", "continue", {
+      const changed = transforms(await externalInput(pi, ctx, input("queued", "continue", {
         streamingBehavior: "steer",
       })))
       expect(changed).toHaveLength(1)
       await settled(pi, ctx)
       await settled(pi, ctx)
       expect(pi.messages).toHaveLength(9)
-      expect(transforms(await browserInput(pi, ctx, input("idle")))).toHaveLength(0)
+      expect(transforms(await externalInput(pi, ctx, input("idle")))).toHaveLength(0)
       await settled(pi, ctx)
 
       // then
@@ -323,7 +323,7 @@ describe("browser input provenance through real consumers", () => {
 
     // when
     holdProbe = true
-    const pending = browserInput(pi, ctx, payload)
+    const pending = externalInput(pi, ctx, payload)
     try {
       await bounded(entered.promise, "queued ulw-loop status probe")
       expect(observed).toEqual([])
@@ -345,7 +345,7 @@ describe("browser input provenance through real consumers", () => {
     await pi.dispatch("session_shutdown", { type: "session_shutdown" }, ctx)
   })
 
-  test("fallback reminders follow browser prompts without promoting nested extension input", async () => {
+  test("fallback reminders follow external prompts without promoting nested extension input", async () => {
     // given
     const { pi, ctx } = fixture()
     await createFallbackArchitectComponent({ hasArchitectCategory: () => true }).register(pi, componentContext)
@@ -365,7 +365,7 @@ describe("browser input provenance through real consumers", () => {
 
     // when
     await submit(pi, ctx, async () => {
-      expect(transforms(await pi.dispatch("input", input("browser", "continue", {
+      expect(transforms(await pi.dispatch("input", input("external", "continue", {
         streamingBehavior: "steer",
       }), ctx))).toHaveLength(0)
       await pi.dispatch("input", input("nested-extension"), ctx)
@@ -374,12 +374,12 @@ describe("browser input provenance through real consumers", () => {
     // then
     expect(reminders()).toHaveLength(1)
     expect(reminders()[0].message.display).toBe(false)
-    await browserInput(pi, ctx, input("next-browser"))
+    await externalInput(pi, ctx, input("next-external"))
     expect(reminders()).toHaveLength(2)
     await pi.dispatch("session_shutdown", { type: "session_shutdown" }, ctx)
   })
 
-  test("memory counts accepted browser turns once using host input IDs and dispositions", async () => {
+  test("memory counts accepted external turns once using host input IDs and dispositions", async () => {
     // given
     const { pi, ctx, sessionId } = fixture()
     const memory = createMemoryNudgeWiring({
@@ -391,20 +391,20 @@ describe("browser input provenance through real consumers", () => {
     await pi.dispatch("input", input("ordinary"), ctx)
     await disposition(pi, "ordinary", "started")
     for (const value of ["rejected", "handled"] as const) {
-      await browserInput(pi, ctx, input(value))
+      await externalInput(pi, ctx, input(value))
       await disposition(pi, value, value)
     }
     expect(memory.provenance(sessionId)?.userTurns).toBe(0)
     expect(pi.entries).toEqual([])
 
     // when
-    await browserInput(pi, ctx, input("accepted-queued", "continue", { streamingBehavior: "steer" }))
+    await externalInput(pi, ctx, input("accepted-queued", "continue", { streamingBehavior: "steer" }))
     expect(memory.provenance(sessionId)?.userTurns).toBe(0)
     await disposition(pi, "unknown-input-id", "started")
     expect(pi.entries).toEqual([])
     await disposition(pi, "accepted-queued", "queued")
     await disposition(pi, "accepted-queued", "started")
-    await browserInput(pi, ctx, input("accepted-started"))
+    await externalInput(pi, ctx, input("accepted-started"))
     await disposition(pi, "accepted-started", "started")
 
     // then
@@ -416,7 +416,7 @@ describe("browser input provenance through real consumers", () => {
     await pi.dispatch("session_shutdown", { type: "session_shutdown" }, ctx)
   })
 
-  test("telemetry classifies browser prompts as RPC and excludes extensions from ordinals", async () => {
+  test("telemetry classifies external prompts as RPC and excludes extensions from ordinals", async () => {
     // given
     const { pi, ctx } = fixture()
     const captures: EventTelemetryProperties[] = []
@@ -436,10 +436,10 @@ describe("browser input provenance through real consumers", () => {
     await disposition(pi, "nested", "started")
     await pi.dispatch("input", input("ordinary", "ulw internal"), ctx)
     await disposition(pi, "ordinary", "started")
-    await browserInput(pi, ctx, input("second", "continue", { streamingBehavior: "followUp" }))
+    await externalInput(pi, ctx, input("second", "continue", { streamingBehavior: "followUp" }))
     await disposition(pi, "second", "queued")
     await disposition(pi, "second", "started")
-    await browserInput(pi, ctx, input("third"))
+    await externalInput(pi, ctx, input("third"))
     await disposition(pi, "third", "started")
     await pi.dispatch("input", input("native", "continue", { source: "interactive" }), ctx)
     await disposition(pi, "native", "started")

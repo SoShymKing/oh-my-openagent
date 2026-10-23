@@ -2,27 +2,27 @@ import { AsyncLocalStorage } from "node:async_hooks"
 
 import type { SenpiExtensionAPI } from "./types"
 
-export interface BrowserUserInputRequest {
+export interface ExternalUserInputRequest {
   readonly sessionId: string
   readonly send: () => void
-  // A matching adapter claims the send synchronously; Tau falls back when none does.
+  // A matching adapter claims the send synchronously; the producer falls back when none does.
   handled?: boolean
 }
 
-interface BrowserSubmission {
+interface ExternalSubmission {
   readonly sessionId: string
   readonly generation: number
   inputId?: string
 }
 
 /**
- * Attribute an explicit browser send inside OMO, without changing host provenance
+ * Attribute an explicit external send inside OMO, without changing host provenance
  * or replaying input hooks. The host still awaits transforms and emits dispositions.
  */
-export function installBrowserUserInputBridge(pi: SenpiExtensionAPI): void {
+export function installExternalUserInputApi(pi: SenpiExtensionAPI): void {
   if (pi.events === undefined) return
 
-  const submissions = new AsyncLocalStorage<BrowserSubmission>()
+  const submissions = new AsyncLocalStorage<ExternalSubmission>()
   const on = pi.on.bind(pi)
   let liveContext: unknown
   let generation = 0
@@ -36,7 +36,7 @@ export function installBrowserUserInputBridge(pi: SenpiExtensionAPI): void {
   })
 
   const unsubscribe = pi.events.on("omo:send-user-input", (request) => {
-    if (!isBrowserUserInputRequest(request) || request.handled === true) return
+    if (!isExternalUserInputRequest(request) || request.handled === true) return
     if (request.sessionId !== sessionIdFromContext(liveContext)) return
 
     request.handled = true
@@ -69,7 +69,7 @@ export function installBrowserUserInputBridge(pi: SenpiExtensionAPI): void {
   })
 }
 
-function isBrowserUserInputRequest(value: unknown): value is BrowserUserInputRequest {
+function isExternalUserInputRequest(value: unknown): value is ExternalUserInputRequest {
   return isRecord(value)
     && typeof value.sessionId === "string" && value.sessionId.length > 0
     && typeof value.send === "function"
