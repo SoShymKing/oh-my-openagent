@@ -9,6 +9,7 @@ const { createPendingQuestion } = await import(new URL("builtin/ask-user/pending
 const { formatUserMessage } = await import(new URL("builtin/ask-user/format.js", extensionBase).href)
 const { releaseQuestionInput } = await import(new URL("../question-input.js", extensionBase).href)
 const { WAKE_SOURCE_STATE_EVENT } = await import(new URL("builtin/monitor-state-event.js", extensionBase).href)
+const notify = await import(new URL("builtin/ask-user/notify.js", extensionBase).href)
 const roots = []
 const pending = []
 afterEach(() => {
@@ -24,16 +25,17 @@ function fixture() {
 function runtime(root) {
   prepareQuestionControl(root)
   const source = readFileSync(join(root, questionControlBundleTarget), "utf8")
-  const registry = source.slice(source.indexOf("var sessions=new Map,outcomes=new Map;"), source.indexOf("function copyAnswers("))
+  const registry = source.slice(source.indexOf("var sessions=new Map,outcomes2=new Map;"), source.indexOf("function copyAnswers("))
   const tool = source.slice(source.indexOf("function deliverAnswer("), source.indexOf("function createAskUserTool("))
   const runnerStart = source.indexOf("createContext(exclude")
   const runner = source.slice(runnerStart, source.indexOf("createToolContext(", runnerStart))
   // These are the actual prelinked owner functions, not separately implemented stand-ins.
-  return new Function("createPendingQuestion", "formatUserMessage", "releaseQuestionInput", "WAKE_SOURCE_STATE_EVENT", `
+  return new Function("createPendingQuestion", "formatUserMessage", "releaseQuestionInput", "WAKE_SOURCE_STATE_EVENT", "notify", `
+    const { ASK_USER_ASKED_EVENT, ASK_USER_QUESTION_ENTRY, ASK_USER_SETTLEMENT_ENTRY, emitAskUserClosed, emitAskUserNotification } = notify;
     ${registry}${tool}
     return { startQuestion, getPendingQuestions, deliverQueuedQuestionOutcomes,
       createContext: ({${runner}}).createContext };
-  `)(createPendingQuestion, formatUserMessage, releaseQuestionInput, WAKE_SOURCE_STATE_EVENT)
+  `)(createPendingQuestion, formatUserMessage, releaseQuestionInput, WAKE_SOURCE_STATE_EVENT, notify)
 }
 function owner(runtime, sessionId) {
   const events = []
@@ -42,6 +44,8 @@ function owner(runtime, sessionId) {
   let onAsked
   const runner = {
     sessionManager: { getSessionId: () => sessionId },
+    boundSessionManager() { return this.sessionManager },
+    currentUIContext() { return this.uiContext },
     assertActive() { if (this.stale) throw new Error("stale context") },
     isIdleFn: () => true,
     uiContext: { notify() {}, question(request, options) {

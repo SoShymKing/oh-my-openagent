@@ -72,6 +72,7 @@ export function createCoreTools(args: {
     claudeCodeAgentsEnabled: pluginConfig.claude_code?.agents ?? true,
     syncPollTimeoutMs: pluginConfig.background_task?.syncPollTimeoutMs,
     autoDeleteSubagentSessions: pluginConfig.background_task?.autoDelete !== false,
+    taskCleanupDelayMs: pluginConfig.background_task?.taskCleanupDelayMs,
     modelFallbackControllerAccessor: managers.modelFallbackControllerAccessor,
     onSyncSessionCreated: async (event) => {
       log("[index] onSyncSessionCreated callback", {

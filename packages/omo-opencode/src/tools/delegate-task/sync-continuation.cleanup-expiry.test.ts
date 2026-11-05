@@ -86,7 +86,7 @@ test.each([false, true])("#given cleanup expired=%s #when resuming #then cancell
   if (expired) {
     expect(deleteSession).toHaveBeenCalledTimes(1)
     expect(deleteSession).toHaveBeenCalledWith({ path: { id: currentSessionID } })
-    expect(get).toHaveBeenCalledTimes(1)
+    expect(get).toHaveBeenCalledTimes(2)
     expect(children).toHaveBeenCalledTimes(1)
     expect(result).toContain("NotFoundError")
     expect(result).toContain(currentSessionID)

@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test"
+import * as connectedProvidersCache from "../../shared/connected-providers-cache"
 import {
   SESSION_RETENTION_METADATA_KEY,
   type SessionRetentionCheckpoint,
@@ -41,6 +42,10 @@ describe("executeSyncTask - cleanup on error paths", () => {
     const { clearAllDelegatedChildSessionBootstrap } = require("../../shared/delegated-child-session-bootstrap")
     clearAllDelegatedChildSessionBootstrap()
     releaseAllPromptAsyncReservationsForTesting()
+    spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue(null)
+    spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue([
+      "anthropic", "opencode-go", "openai", "genai-proxy-openai", "genai-proxy-aws",
+    ])
 
     clearRequireCache("./sync-task")
 
@@ -78,6 +83,7 @@ describe("executeSyncTask - cleanup on error paths", () => {
     resetToastManager = null
     const { clearAllDelegatedChildSessionBootstrap } = require("../../shared/delegated-child-session-bootstrap")
     clearAllDelegatedChildSessionBootstrap()
+    releaseAllPromptAsyncReservationsForTesting()
   })
 
   test("cleans up toast and subagentSessions when fetchSyncResult returns ok: false", async () => {

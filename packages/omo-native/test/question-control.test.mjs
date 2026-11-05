@@ -52,6 +52,8 @@ async function runtime(root = fixture()) {
     const listeners = new Map()
     const runner = {
       sessionManager: { getSessionId: () => id },
+      boundSessionManager() { return this.sessionManager },
+      currentUIContext() { return this.uiContext },
       assertActive() { if (this.stale) throw new Error("stale context") },
       uiContext: {
         notify: (...args) => notices.push(args),
@@ -95,7 +97,7 @@ describe("session question control on actual pinned builtin code", () => {
     const root = fixture(false)
     const source = readFileSync(join(root, "dist/core/extensions/runner.js"), "utf8")
     const method = source.slice(source.indexOf("    createContext("), source.indexOf("    /**\n     * Create the context for executing"))
-    const unprepared = new Function(`return ({${method}}).createContext`)().call({})
+    const unprepared = new Function(`return ({${method}}).createContext`)().call({ sessionManager: { getSessionId: () => "unprepared" } })
     expect(unprepared.questions).toBeUndefined()
     prepareQuestionControl(root)
     const { owner } = await runtime(root)

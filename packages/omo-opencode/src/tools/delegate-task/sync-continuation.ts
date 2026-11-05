@@ -31,6 +31,7 @@ import {
   scheduleSyncSessionDeletion,
 } from "./sync-session-cleanup"
 import { getSessionNotFoundError, isSessionNotFoundPollError } from "./session-not-found-error"
+import { formatDeletedSyncSessionError, isSyncSessionDeleted } from "./sync-session-existence"
 
 type ResumeModel = { providerID: string; modelID: string }
 
@@ -121,6 +122,11 @@ export async function executeSyncContinuation(
     throw new Error("task_id is required to continue a sync task")
   }
   const releaseRetentionLease = acquireSyncSessionLease(continuationID)
+  if (await isSyncSessionDeleted(client, continuationID)) {
+    releaseRetentionLease()
+    log("[task] Refusing to continue deleted sync session", { sessionID: continuationID })
+    return formatDeletedSyncSessionError(continuationID)
+  }
   const detachFromManager = executorCtx.manager?.attachSyncContinuation?.(continuationID)
   const taskId = `resume_sync_${continuationID.slice(0, 8)}`
   const startTime = new Date()
@@ -183,6 +189,7 @@ export async function executeSyncContinuation(
     const retentionModel = resumeModelForMetadata ?? previousCheckpoint?.model
     const retentionAgent = resumeAgent ?? previousCheckpoint?.agent
     const retentionCategory = args.category ?? previousCheckpoint?.category
+    const taskCleanupDelayMs = executorCtx.taskCleanupDelayMs ?? previousCheckpoint?.taskCleanupDelayMs
     retentionCheckpoint = {
       version: 1,
       mode: "sync",
@@ -193,6 +200,7 @@ export async function executeSyncContinuation(
       ...(retentionAgent === undefined ? {} : { agent: retentionAgent }),
       ...(retentionModel === undefined ? {} : { model: retentionModel }),
       ...(retentionCategory === undefined ? {} : { category: retentionCategory }),
+      ...(taskCleanupDelayMs === undefined ? {} : { taskCleanupDelayMs }),
       autoDelete: previousCheckpoint?.autoDelete === false
         || executorCtx.autoDeleteSubagentSessions === false
         ? false

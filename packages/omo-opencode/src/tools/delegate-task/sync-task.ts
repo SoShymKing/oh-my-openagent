@@ -94,6 +94,7 @@ export async function executeSyncTask(
         ...(currentModel === undefined ? {} : { model: currentModel }),
         ...(args.category === undefined ? {} : { category: args.category }),
         autoDelete: executorCtx.autoDeleteSubagentSessions ?? true,
+        ...(executorCtx.taskCleanupDelayMs === undefined ? {} : { taskCleanupDelayMs: executorCtx.taskCleanupDelayMs }),
       }
       retentionCheckpoints.set(newSessionID, checkpoint)
       await registerSyncSessionSideEffects({

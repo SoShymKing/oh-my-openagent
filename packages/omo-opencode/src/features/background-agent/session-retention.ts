@@ -29,6 +29,7 @@ export type SessionRetentionCheckpoint = {
   }
   readonly category?: string
   readonly autoDelete: boolean
+  readonly taskCleanupDelayMs?: number
   readonly terminalStatus?: "completed" | "error" | "cancelled" | "interrupt"
   readonly terminalAt?: number
   readonly handoffConfirmedAt?: number
@@ -62,6 +63,12 @@ export function parseSessionRetentionCheckpoint(value: unknown): SessionRetentio
   if (value.mode !== "background" && value.mode !== "sync") return undefined
   if (typeof value.sessionID !== "string" || value.sessionID.length === 0) return undefined
   if (typeof value.autoDelete !== "boolean") return undefined
+  const taskCleanupDelayMs = value.taskCleanupDelayMs
+  if (taskCleanupDelayMs !== undefined && (
+    typeof taskCleanupDelayMs !== "number"
+    || !Number.isFinite(taskCleanupDelayMs)
+    || taskCleanupDelayMs < 60_000
+  )) return undefined
 
   const taskID = optionalString(value, "taskID")
   const parentSessionID = optionalString(value, "parentSessionID")
@@ -102,6 +109,7 @@ export function parseSessionRetentionCheckpoint(value: unknown): SessionRetentio
     mode: value.mode,
     sessionID: value.sessionID,
     autoDelete: value.autoDelete,
+    ...(taskCleanupDelayMs === undefined ? {} : { taskCleanupDelayMs }),
     ...(taskID === undefined ? {} : { taskID }),
     ...(parentSessionID === undefined ? {} : { parentSessionID }),
     ...(parentMessageID === undefined ? {} : { parentMessageID }),
@@ -116,7 +124,8 @@ export function parseSessionRetentionCheckpoint(value: unknown): SessionRetentio
 
 export function getSessionRetentionDeadline(checkpoint: SessionRetentionCheckpoint): number | undefined {
   if (checkpoint.terminalAt === undefined || checkpoint.handoffConfirmedAt === undefined) return undefined
-  return Math.max(checkpoint.terminalAt, checkpoint.handoffConfirmedAt) + TASK_CLEANUP_DELAY_MS
+  return Math.max(checkpoint.terminalAt, checkpoint.handoffConfirmedAt)
+    + (checkpoint.taskCleanupDelayMs ?? TASK_CLEANUP_DELAY_MS)
 }
 
 export class SessionOperationLeases {

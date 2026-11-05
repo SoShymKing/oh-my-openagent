@@ -59,6 +59,8 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
     __resetTimingConfig()
     const { clearAllSyncSessionErrorsForTesting } = require("../../shared/sync-session-error-store")
     clearAllSyncSessionErrorsForTesting()
+    const { releaseAllPromptAsyncReservationsForTesting } = require("../../shared/prompt-async-gate")
+    releaseAllPromptAsyncReservationsForTesting()
 
 		mock.restore()
 
@@ -597,7 +599,6 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
     const { executeSyncContinuation } = require("./sync-continuation")
     const { pollSyncSession } = require("./sync-session-poller")
     const controller = new AbortController()
-    const abortTimer = setTimeout(() => controller.abort(), 80)
     let messageCallCount = 0
     let childCheckCount = 0
     let statusCallCount = 0
@@ -627,6 +628,7 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
               "[ALL BACKGROUND TASKS COMPLETE]",
               "</system-reminder>",
               "<!-- OMO_INTERNAL_INITIATOR -->",
+              "<!-- OMO_INTERNAL_NOREPLY -->",
             ].join("\n"),
           },
         ],
@@ -677,19 +679,15 @@ describe("executeSyncContinuation - toast cleanup error paths", () => {
       run_in_background: false,
     }
 
-    try {
-      const result = await executeSyncContinuation(args, mockCtx, mockExecutorCtx, {
-        sessionID: "parent-session",
-        messageID: "parent-message",
-      }, deps)
+    const result = await executeSyncContinuation(args, mockCtx, mockExecutorCtx, {
+      sessionID: "parent-session",
+      messageID: "parent-message",
+    }, deps)
 
-      expect(result).toContain("Task continued and completed")
-      expect(result).toContain("Result")
-      expect(childCheckCount).toBeGreaterThan(0)
-      expect(removeTaskCalls[0]).toBe("resume_sync_ses_test")
-    } finally {
-      clearTimeout(abortTimer)
-    }
+    expect(result).toContain("Task continued and completed")
+    expect(result).toContain("Result")
+    expect(childCheckCount).toBeGreaterThan(0)
+    expect(removeTaskCalls[0]).toBe("resume_sync_ses_test")
   })
 
   test("marks and aborts resumed sync session after successful handback", async () => {

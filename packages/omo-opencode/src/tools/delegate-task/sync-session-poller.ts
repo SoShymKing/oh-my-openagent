@@ -7,7 +7,9 @@ import { log } from "../../shared/logger"
 import { isTerminalNoReplyUserMessage, normalizeSDKResponse } from "../../shared"
 import { consumeSyncSessionError } from "../../shared/sync-session-error-store"
 import { extractErrorMessage } from "../../features/background-agent/error-classifier"
-import { getSessionNotFoundError } from "./session-not-found-error"
+import { getSessionNotFoundError, SessionNotFoundError } from "./session-not-found-error"
+import { MIN_SESSION_GONE_POLLS } from "../../features/background-agent/session-existence"
+import { formatDeletedSyncSessionError, isSyncSessionDeleted } from "./sync-session-existence"
 
 export { isSessionComplete } from "./sync-session-turns"
 
@@ -118,6 +120,7 @@ export async function pollSyncSession(
   let lastStatusRevision: string | undefined
   let hasFetchedNonActiveMessages = false
   let timedOut = false
+  let consecutiveDeletedChecks = 0
   let assistantTurnCount = 0
   let lastSeenAssistantId: string | undefined
   let lastObservedAssistantId: string | undefined
@@ -209,10 +212,12 @@ export async function pollSyncSession(
     pollCount++
 
     let sessionStatus: ({ type: string; updatedAt?: string | number; revision?: string | number; messageCount?: number } & Record<string, unknown>) | undefined
+    let statusFetched = false
     try {
       const statusResult = await client.session.status()
       const allStatuses = normalizeSDKResponse(statusResult, {} as Record<string, { type: string }>)
       sessionStatus = allStatuses[input.sessionID] as typeof sessionStatus
+      statusFetched = true
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -234,6 +239,22 @@ export async function pollSyncSession(
       const errorMessage = extractErrorMessage(asyncSessionError) ?? "Session error"
       log("[task] Poll detected async session error", { sessionID: input.sessionID, sessionError: errorMessage })
       return errorMessage
+    }
+
+    // Idle sessions are also absent from the status map, so absence alone is not terminal;
+    // a session that the server repeatedly reports as not found is gone and can never finish.
+    if (statusFetched && sessionStatus === undefined) {
+      consecutiveDeletedChecks = await isSyncSessionDeleted(client, input.sessionID) ? consecutiveDeletedChecks + 1 : 0
+      if (consecutiveDeletedChecks >= MIN_SESSION_GONE_POLLS) {
+        log("[task] Poll stopped - session no longer exists", { sessionID: input.sessionID, pollCount })
+        if (input.toastManager && input.taskId) input.toastManager.removeTask(input.taskId)
+        return new SessionNotFoundError(input.sessionID, {
+          name: "NotFoundError",
+          message: formatDeletedSyncSessionError(input.sessionID),
+        }).message
+      }
+    } else {
+      consecutiveDeletedChecks = 0
     }
 
     const isActive = isActiveSessionStatus(sessionStatus)

@@ -36,11 +36,12 @@ const patch = (root) => spawnSync(process.execPath, [patchScript], { env: { ...p
 describe("shared question preparation", () => {
   test("postinstall and the engine-swap invocation prepare the actual graph once", () => {
     const root = fixture()
+    const originalUa = readFileSync(join(root, ua), "utf8")
     const result = patch(root)
     expect(result.stderr).toBe("")
     expect(result.status).toBe(0)
     expect(planQuestionControl(root).every(({ source, prepared }) => source === prepared)).toBe(true)
-    expect(readFileSync(join(root, ua), "utf8")).toContain("2.1.280")
+    expect(readFileSync(join(root, ua), "utf8")).toBe(originalUa)
     expect(readFileSync(join(root, rpc), "utf8")).toContain("invalid_stream_event")
     const first = snapshot(root)
     expect(patch(root).status).toBe(0)

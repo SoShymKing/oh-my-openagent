@@ -3,7 +3,7 @@ import { unsafeTestValue } from "../../../../../test-support/unsafe-test-value"
 import { executeSyncContinuation } from "./sync-continuation"
 import type { ExecutorContext } from "./executor-types"
 import { cancelSyncSessionDeletion } from "./sync-session-cleanup"
-import { releasePromptAsyncReservation } from "../../shared/prompt-async-gate"
+import { releaseAllPromptAsyncReservationsForTesting } from "../../shared/prompt-async-gate"
 import { SessionNotFoundError } from "./session-not-found-error"
 import * as messageContext from "../../features/hook-message-injector"
 
@@ -15,7 +15,7 @@ const args = { task_id: sessionID, prompt: "Continue", description: "Resume", lo
 afterEach(() => {
   mock.restore()
   cancelSyncSessionDeletion(sessionID)
-  releasePromptAsyncReservation(sessionID, "model-suggestion-retry")
+  releaseAllPromptAsyncReservationsForTesting()
 })
 
 test("#given fulfilled SDK Error envelope #when reading history #then local transcript fallback is skipped", async () => {

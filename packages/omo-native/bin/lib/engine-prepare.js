@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { floorClaudeCodeVersion } from "./claude-code-floor.js"
 import { prepareCompileSafeEngine } from "./compile-safe-engine.js"
 import { LAUNCH_SPEC_FILENAME, normalizeLaunchSpecMode } from "./launch-spec-mode.js"
 import { prepareRpcStreamErrors } from "./rpc-stream-errors.js"
@@ -12,7 +11,6 @@ export const ENGINE_PREPARED_STAMP = ".omo-engine-prepared"
 export function prepareInstalledEngine(senpiRoot) {
   // An incompatible question owner must fail before any of the shared preparations write.
   planQuestionControl(senpiRoot)
-  floorClaudeCodeVersion(senpiRoot)
   prepareCompileSafeEngine(senpiRoot)
   prepareRpcStreamErrors(senpiRoot)
   prepareQuestionControl(senpiRoot)

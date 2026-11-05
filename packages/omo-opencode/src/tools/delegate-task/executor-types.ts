@@ -18,6 +18,7 @@ export interface ExecutorContext {
   onSyncSessionCreated?: (event: { sessionID: string; parentID: string; title: string }) => Promise<void>
   syncPollTimeoutMs?: number
   autoDeleteSubagentSessions?: boolean
+  taskCleanupDelayMs?: number
 }
 
 export interface ParentContext {

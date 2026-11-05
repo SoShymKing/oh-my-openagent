@@ -89,8 +89,19 @@ describe("session retention checkpoints", () => {
     expect(call.query?.directory).toBe("/project")
   })
 
+  test.each([-1, 0, 59_999, NaN, Infinity, "120000"])("#given invalid cleanup delay %s #when parsed #then rejects the checkpoint", (taskCleanupDelayMs) => {
+    // given
+    const persisted = { ...checkpoint, taskCleanupDelayMs }
+
+    // when
+    const parsed = parseSessionRetentionCheckpoint(persisted)
+
+    // then
+    expect(parsed).toBeUndefined()
+  })
+
   test("#given multiple lifecycle markers #when read #then returns the newest checkpoint", async () => {
-    const latest = { ...checkpoint, handoffConfirmedAt: 3_000 }
+    const latest = { ...checkpoint, handoffConfirmedAt: 3_000, taskCleanupDelayMs: 120_000 }
     const messages = mock(async () => ({ data: [retentionMessage(checkpoint), retentionMessage(latest)] }))
     const client = unsafeTestValue<OpencodeClient>({ session: { messages } })
 
@@ -111,6 +122,37 @@ describe("session retention eligibility", () => {
   test("#given terminal and handoff timestamps #when computing deadline #then uses the later timestamp once", () => {
     expect(getSessionRetentionDeadline(checkpoint)).toBe(602_000)
     expect(getSessionRetentionDeadline({ ...checkpoint, handoffConfirmedAt: undefined })).toBeUndefined()
+  })
+
+  test.each([
+    { taskCleanupDelayMs: 120_000, now: 121_999, deleted: 0 },
+    { taskCleanupDelayMs: 120_000, now: 122_000, deleted: 1 },
+    { taskCleanupDelayMs: 900_000, now: 901_999, deleted: 0 },
+    { taskCleanupDelayMs: 900_000, now: 902_000, deleted: 1 },
+  ])("#given persisted delay $taskCleanupDelayMs at $now #when startup reconciles #then deletion respects the saved deadline", async ({ taskCleanupDelayMs, now, deleted }) => {
+    // given
+    const persisted = { ...checkpoint, mode: "sync" as const, taskCleanupDelayMs }
+    const { client, deleteSession } = deletionClient()
+    const restartedClient = unsafeTestValue<OpencodeClient>({
+      session: {
+        ...client.session,
+        list: async () => ({ data: [{ id: persisted.sessionID }] }),
+        messages: async () => ({ data: [retentionMessage(persisted)] }),
+      },
+    })
+
+    // when
+    const result = await reconcilePersistedSessionRetention({
+      client: restartedClient,
+      leases: new SessionOperationLeases(),
+      autoDelete: true,
+      directory: "/project",
+      now,
+    })
+
+    // then
+    expect(result).toEqual({ status: "completed", scanned: 1, deleted, missing: 0, preserved: 1 - deleted })
+    expect(deleteSession).toHaveBeenCalledTimes(deleted)
   })
 
   test("#given nested operations #when leases release #then activity remains until the final release", () => {

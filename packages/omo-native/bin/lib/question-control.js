@@ -5,18 +5,18 @@ import { join } from "node:path"
 const base = "dist/core/extensions/"
 const ask = `${base}builtin/ask-user/`
 const marker = "// omo question control"
-// These are the actual pinned 2026.10.21-3 sources, not invented engine fixtures.
+// These are the actual pinned 2026.11.3-3 sources, not invented engine fixtures.
 // Fingerprints validate every binding (including unchanged finish/reload ownership) before any write.
 const originals = {
-  [`${ask}tool.js`]: "b871398cb6337f0c49da343f4941e2a48bd9a0594ae0ee646fd82e73dc45b435",
+  [`${ask}tool.js`]: "85ffdb99851eaca12c96b55e61dc9490352e9d69aaf32e1e918abac38b61e466",
   [`${ask}registry.js`]: "ecd096a968e01a1a5745ffd715af84fd13d4c7d00cf40100f66c57831bb008c7",
-  [`${ask}registry.d.ts`]: "2cf23c62167fe499b9bb6ae215c69bf7549955e74410ade8a30708b1c26ca922",
-  [`${base}runner.js`]: "c48bfba5e40e64ed8681b7ae19f915d74bce0c3b3b9779a0c57386e785f875ec",
-  [`${base}types.d.ts`]: "a67a53b73640a1d155f8f1c1af602733bd8fd9815bd7878e545155bcfd327f2c",
+  [`${ask}registry.d.ts`]: "3d365792c1ae25c48da60dc8484db835a940bcfeeaef965cc0d70c2fe444cc00",
+  [`${base}runner.js`]: "21140d30ce7e12ff5b30bb747fe81c2a39d9aa5be39321bf8820315472dd2c20",
+  [`${base}types.d.ts`]: "a88526722d9fb0e941678c071712e113ee6c2635dd536a2308ca918d08e9112b",
 }
 export const questionControlTargets = Object.keys(originals)
-export const questionControlBundleTarget = "dist/bundle/chunks/chunk-BLWWTQZO.js"
-const bundleDigest = "673f08d97b9cb84c6ecfcde5722af71a5c577b808099d1773daf1533585ee749"
+export const questionControlBundleTarget = "dist/bundle/chunks/chunk-OQRGDBY6.js"
+const bundleDigest = "7d87dea49abfcae640e078bf789ed9944631febdd6bd5a13e1868f34871b506f"
 const digest = (source) => createHash("sha256").update(source).digest("hex")
 const incompatible = (detail) => new Error(`omo-ai: question_control_incompatible: ${detail}`)
 const runnerImport = 'import { createQuestionControl } from "./builtin/ask-user/question-control.js";\n'
@@ -24,7 +24,7 @@ const getter = `            get questions() {
                 runner.assertActive();
                 return createQuestionControl(() => {
                     runner.assertActive();
-                    return runner.sessionManager.getSessionId();
+                    return runner.boundSessionManager().getSessionId();
                 });
             },
 `
@@ -87,14 +87,14 @@ function transformBundle(source, runtime, undo = false) {
     .replace("export function createQuestionControl", "function createQuestionControl")}
 return createQuestionControl(sessionId);\n}\n`
   swap("function getPendingQuestions(sessionId)", `${inline}function getPendingQuestions(sessionId)`)
-  swap("get sessionManager(){return runner.assertActive(),runner.sessionManager}", "get questions(){return runner.assertActive(),createOmoQuestionControl(()=>{return runner.assertActive(),runner.sessionManager.getSessionId()})},get sessionManager(){return runner.assertActive(),runner.sessionManager}")
+  swap("get sessionManager(){return runner.assertActive(),runner.boundSessionManager()}", "get questions(){return runner.assertActive(),createOmoQuestionControl(()=>{return runner.assertActive(),runner.boundSessionManager().getSessionId()})},get sessionManager(){return runner.assertActive(),runner.boundSessionManager()}")
   swap("completion:completion.promise,cancel:cancel3", "completion:completion.promise,respond(response){if(settled2)return!1;return accept(response),!0},cancel:cancel3")
   const block = source.match(/unregister=registerPendingQuestion\(sessionId,\{request:request2,[\s\S]*?signal\?\.addEventListener\("abort",abort,\{once:!0\}\);/)?.[0]
   if (!block) throw incompatible("bundled registration/arrival")
   source = source.replace(block, "")
   const arrival = "pi.events.emit(ASK_USER_ASKED_EVENT,{ctx,request:request2,variant})"
-  const tail = "return signal?.aborted?abort():attach(),completion.promise}"
-  const guardedTail = `${arrival};return settled2?completion.promise:(signal?.aborted?abort():attach(),completion.promise)}`
+  const tail = "return signal?.aborted?abort():attach2(),completion.promise}"
+  const guardedTail = `${arrival};return settled2?completion.promise:(signal?.aborted?abort():attach2(),completion.promise)}`
   if (undo) {
     source = replace(source, guardedTail, tail)
     source = replace(source, "let draft={answers:{}},opts=", `${block.replace(";let first=request2.questions[0]", `,${arrival};let first=request2.questions[0]`)}let draft={answers:{}},opts=`)
