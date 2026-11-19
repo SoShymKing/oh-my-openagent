@@ -99,13 +99,18 @@ describe("pollSyncSession for a session that no longer exists", () => {
     })
 
     // when
-    const result = await pollSyncSession(toolContext, client, {
-      sessionID: "ses_deleted",
-      agentToUse: "oracle",
-      toastManager: null,
-      taskId: undefined,
-      anchorMessageCount: 0,
-    }, LONG_POLL_TIMEOUT_MS)
+    const result = await pollSyncSession(
+      toolContext,
+      client,
+      {
+        sessionID: "ses_deleted",
+        agentToUse: "oracle",
+        toastManager: null,
+        taskId: undefined,
+        anchorMessageCount: 0,
+      },
+      LONG_POLL_TIMEOUT_MS,
+    )
 
     // then
     expect(isSessionNotFoundPollError(result ?? "")).toBe(true)
@@ -131,12 +136,17 @@ describe("pollSyncSession for a session that no longer exists", () => {
     })
 
     // when
-    const result = await pollSyncSession(toolContext, client, {
-      sessionID: "ses_idle",
-      agentToUse: "oracle",
-      toastManager: null,
-      taskId: undefined,
-    }, LONG_POLL_TIMEOUT_MS)
+    const result = await pollSyncSession(
+      toolContext,
+      client,
+      {
+        sessionID: "ses_idle",
+        agentToUse: "oracle",
+        toastManager: null,
+        taskId: undefined,
+      },
+      LONG_POLL_TIMEOUT_MS,
+    )
 
     // then
     expect(result).toBeNull()

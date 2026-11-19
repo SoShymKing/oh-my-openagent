@@ -130,7 +130,9 @@ export function createSkillInvocationTracker(pi: SenpiExtensionAPI): SkillInvoca
     depositSessionHandoff(sessionId, {
       invoked: [...(invokedBySession.get(sessionId) ?? [])],
       requested: [...(requestedBySession.get(sessionId) ?? [])],
-      planTouches: [...(planTouchesBySession.get(sessionId) ?? [])].map(([path, touch]) => [path, { ...touch }] as const),
+      planTouches: [...(planTouchesBySession.get(sessionId) ?? [])].map(
+        ([path, touch]) => [path, { ...touch }] as const,
+      ),
       planTouchSequence,
     })
   }
@@ -323,14 +325,21 @@ function userText(content: unknown): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
   return content
-    .flatMap((block: unknown) => (isRecord(block) && block["type"] === "text" && typeof block["text"] === "string" ? [block["text"]] : []))
+    .flatMap((block: unknown) =>
+      isRecord(block) && block["type"] === "text" && typeof block["text"] === "string" ? [block["text"]] : [],
+    )
     .join("\n")
 }
 
-function toolCalls(content: unknown): readonly { readonly id: string; readonly name: string; readonly args: unknown }[] {
+function toolCalls(
+  content: unknown,
+): readonly { readonly id: string; readonly name: string; readonly args: unknown }[] {
   if (!Array.isArray(content)) return []
   return content.flatMap((block: unknown) =>
-    isRecord(block) && block["type"] === "toolCall" && typeof block["id"] === "string" && typeof block["name"] === "string"
+    isRecord(block) &&
+    block["type"] === "toolCall" &&
+    typeof block["id"] === "string" &&
+    typeof block["name"] === "string"
       ? [{ id: block["id"], name: block["name"], args: block["arguments"] }]
       : [],
   )

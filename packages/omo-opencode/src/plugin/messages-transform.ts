@@ -18,10 +18,12 @@ const ASSISTANT_PREFILL_UNSUPPORTED_PROVIDERS = new Set([
   "opencode-zen-proxy",
   "vercel",
 ])
+// Fable and Mythos ship as one release pair and both reject assistant prefill.
 const ASSISTANT_PREFILL_UNSUPPORTED_MODEL_PREFIXES = [
   "claude-opus-4",
   "claude-sonnet-4-6",
   "claude-mythos",
+  "claude-fable",
 ]
 
 type MessageWithParts = {
@@ -91,8 +93,6 @@ function findLastUserTurn(messages: MessageWithParts[]): MessageWithParts | unde
   return undefined
 }
 
-
-
 function readStringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key]
   return typeof value === "string" && value.length > 0 ? value : undefined
@@ -106,10 +106,10 @@ function readModelIdentifier(info: unknown): ModelIdentifier | undefined {
   const model = info["model"]
   const nestedModel = isRecord(model) ? model : undefined
   const providerID = nestedModel
-    ? readStringField(nestedModel, "providerID") ?? readStringField(info, "providerID")
+    ? (readStringField(nestedModel, "providerID") ?? readStringField(info, "providerID"))
     : readStringField(info, "providerID")
   const modelID = nestedModel
-    ? readStringField(nestedModel, "modelID") ?? readStringField(info, "modelID")
+    ? (readStringField(nestedModel, "modelID") ?? readStringField(info, "modelID"))
     : readStringField(info, "modelID")
 
   return providerID && modelID ? { providerID, modelID } : undefined
@@ -128,9 +128,7 @@ function findLastUserModel(messages: MessageWithParts[]): ModelIdentifier | unde
 
 function normalizeAssistantPrefillModelID(modelID: string): string {
   const normalizedModelID = normalizeModelID(modelID.toLowerCase())
-  return normalizedModelID
-    .split(/[/.~:@]+/)
-    .find((segment) => segment.startsWith("claude-")) ?? normalizedModelID
+  return normalizedModelID.split(/[/.~:@]+/).find((segment) => segment.startsWith("claude-")) ?? normalizedModelID
 }
 
 function hasAnthropicModelNamespace(modelID: string): boolean {
@@ -139,8 +137,7 @@ function hasAnthropicModelNamespace(modelID: string): boolean {
 }
 
 function providerCanExposeUnsupportedAssistantPrefill(providerID: string, modelID: string): boolean {
-  return ASSISTANT_PREFILL_UNSUPPORTED_PROVIDERS.has(providerID) ||
-    hasAnthropicModelNamespace(modelID)
+  return ASSISTANT_PREFILL_UNSUPPORTED_PROVIDERS.has(providerID) || hasAnthropicModelNamespace(modelID)
 }
 
 function shouldRepairAssistantPrefillForModel(model: ModelIdentifier | undefined): boolean {
@@ -212,7 +209,8 @@ function ensureUserTurnAfterAssistantTail(output: MessagesTransformOutput): void
     return
   }
 
-  const shouldRepairAssistantTail = hasInternalContinuationTrigger(output.messages) ||
+  const shouldRepairAssistantTail =
+    hasInternalContinuationTrigger(output.messages) ||
     shouldRepairAssistantPrefillForModel(findLastUserModel(output.messages)) ||
     shouldRepairAssistantPrefillForModel(readModelIdentifier(lastMessage.info))
   if (!shouldRepairAssistantTail) {
@@ -255,18 +253,12 @@ export function createMessagesTransformHandler(args: {
     }
 
     for (const hook of MESSAGES_TRANSFORM_HOOKS) {
-      const handler =
-        args.hooks[hook.key]?.["experimental.chat.messages.transform"]
+      const handler = args.hooks[hook.key]?.["experimental.chat.messages.transform"]
       if (hook.fatal) {
         if (handler) await Promise.resolve(handler(input, output))
         continue
       }
-      await runMessagesTransformHookSafely(
-        hook.name,
-        handler,
-        input,
-        output,
-      )
+      await runMessagesTransformHookSafely(hook.name, handler, input, output)
     }
 
     ensureUserTurnAfterAssistantTail(output)

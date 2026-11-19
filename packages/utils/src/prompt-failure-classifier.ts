@@ -22,10 +22,10 @@ export function isAmbiguousPromptDispatchFailure(error: unknown): boolean {
   )) return false
   const message = extractPromptFailureMessage(error).toLowerCase()
   return (
-    message.includes("unexpected eof")
-    || message.includes("json parse error")
-    || message.includes("unexpected end of json input")
-    || message.includes("timed out")
+    message.includes("unexpected eof") ||
+    message.includes("json parse error") ||
+    message.includes("unexpected end of json input") ||
+    message.includes("timed out")
   )
 }
 

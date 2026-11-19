@@ -34,11 +34,13 @@ function createDeferred<T>(): {
   return { promise, resolve }
 }
 
-function createNotifier(args: {
-  readonly sessionMessagesImpl?: (attempt: number) => Promise<unknown>
-  readonly promptAsyncImpl?: (call: PromptAsyncCall, attempt: number) => Promise<unknown>
-  readonly failureRequeueWindowMs?: number
-} = {}): {
+function createNotifier(
+  args: {
+    readonly sessionMessagesImpl?: (attempt: number) => Promise<unknown>
+    readonly promptAsyncImpl?: (call: PromptAsyncCall, attempt: number) => Promise<unknown>
+    readonly failureRequeueWindowMs?: number
+  } = {},
+): {
   readonly notifier: ParentWakeNotifier
   readonly promptAsyncCalls: PromptAsyncCall[]
 } {
@@ -140,9 +142,19 @@ describe("ParentWakeNotifier late error recovery", () => {
     }
   })
 
-  test("#given accepted final wake never produces output #when a second recovery window elapses #then the wake is requeued", async () => {
+  test("#given recovery history inspection is unresolved #when inspection finds no output #then the owned wake transfers to pending once", async () => {
     // given
-    const { notifier, promptAsyncCalls } = createNotifier()
+    const inspectionStarted = createDeferred<void>()
+    const inspection = createDeferred<unknown>()
+    const history = { data: [{ info: { role: "assistant", finish: "stop", time: { created: Date.now() - 10_000 } } }] }
+    let inspectRecovery = false
+    const { notifier, promptAsyncCalls } = createNotifier({
+      sessionMessagesImpl: async () => {
+        if (!inspectRecovery) return history
+        inspectionStarted.resolve(undefined)
+        return inspection.promise
+      },
+    })
     const sessionID = "parent-silent-dispatch-retry"
     notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true)
 
@@ -151,17 +163,28 @@ describe("ParentWakeNotifier late error recovery", () => {
       expect(promptAsyncCalls).toHaveLength(1)
       expect(notifier.getDispatchedParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
 
-      // when/then: first window remains a late-error grace period.
-      await waitForTimer()
+      const dispatchedWake = notifier.getDispatchedParentWakes().get(sessionID)
+      inspectRecovery = true
+      await inspectionStarted.promise
+      expect(notifier.getDispatchedParentWakes().get(sessionID)).toEqual(dispatchedWake)
       expect(notifier.getDispatchedParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
       expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
 
-      // when/then: the next silent window retries the user-visible completion wake.
+      // when: complete the first inspection with history predating this dispatch.
+      inspection.resolve(history)
       await waitUntil(() => notifier.getPendingParentWakes().has(sessionID), 600)
-      expect(notifier.getPendingParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
+
+      // then: ownership transfers without another prompt or another recovery window.
+      expect(notifier.getPendingParentWakes().get(sessionID)).toEqual({
+        ...dispatchedWake,
+        noAssistantOutputRetryCount: 1,
+      })
+      expect(promptAsyncCalls).toHaveLength(1)
+      expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(true)
       expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
       expect(notifier.getDispatchedParentWakeTimers().has(sessionID)).toBe(false)
     } finally {
+      inspection.resolve(history)
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()
     }

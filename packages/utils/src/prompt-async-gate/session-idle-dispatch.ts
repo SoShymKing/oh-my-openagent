@@ -9,12 +9,13 @@ import {
   reservedDispatchResult,
   setPromptReservation,
 } from "./reservations"
-import {
-  getPromptGateMessagesFetchTimeoutMs,
-  getPromptGateRevalidationTimeoutMs,
-  withDispatchTimeout,
-} from "./timing"
-import type { InternalPromptDispatchResult, PromptAsyncReservation, PromptDispatchClient, PromptSessionName } from "./types"
+import { getPromptGateMessagesFetchTimeoutMs, getPromptGateRevalidationTimeoutMs, withDispatchTimeout } from "./timing"
+import type {
+  InternalPromptDispatchResult,
+  PromptAsyncReservation,
+  PromptDispatchClient,
+  PromptSessionName,
+} from "./types"
 
 export async function dispatchAfterSessionIdle<TInput>(args: {
   readonly sessionName: PromptSessionName
@@ -99,16 +100,16 @@ export async function dispatchAfterSessionIdle<TInput>(args: {
     }
 
     if (
-      checkToolState
-      && typeof client.session?.messages === "function"
-      && await sessionLatestAssistantBlocksInternalPrompt({
+      checkToolState &&
+      typeof client.session?.messages === "function" &&
+      (await sessionLatestAssistantBlocksInternalPrompt({
         client,
         sessionID,
         input,
         sessionName,
         source,
         timeoutMs: Math.min(dispatchTimeoutMs, getPromptGateMessagesFetchTimeoutMs()),
-      })
+      }))
     ) {
       log(`[prompt-async-gate] ${sessionName} skipped because latest assistant is still active`, {
         sessionID,
@@ -118,16 +119,14 @@ export async function dispatchAfterSessionIdle<TInput>(args: {
     }
 
     const dispatchDecision = shouldDispatch?.()
-    const resolvedDispatchDecision = (
-      dispatchDecision !== undefined
-      && typeof dispatchDecision !== "boolean"
-    )
-      ? await withDispatchTimeout(
-        dispatchDecision,
-        Math.min(dispatchTimeoutMs, getPromptGateRevalidationTimeoutMs()),
-        `[prompt-async-gate] ${sessionName} shouldDispatch`,
-      )
-      : dispatchDecision
+    const resolvedDispatchDecision =
+      dispatchDecision !== undefined && typeof dispatchDecision !== "boolean"
+        ? await withDispatchTimeout(
+            dispatchDecision,
+            Math.min(dispatchTimeoutMs, getPromptGateRevalidationTimeoutMs()),
+            `[prompt-async-gate] ${sessionName} shouldDispatch`,
+          )
+        : dispatchDecision
     if (resolvedDispatchDecision === false) {
       log(`[prompt-async-gate] ${sessionName} cancelled before dispatch`, { sessionID, source })
       return { status: "cancelled" }

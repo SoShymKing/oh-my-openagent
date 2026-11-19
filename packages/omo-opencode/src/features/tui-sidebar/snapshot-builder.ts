@@ -40,9 +40,7 @@ export type BuildTuiRuntimeSnapshotInput = {
 
 type ActiveAgentStatus = Extract<AgentStatus, "busy" | "retry" | "running">
 
-export async function buildTuiRuntimeSnapshot(
-  input: BuildTuiRuntimeSnapshotInput,
-): Promise<TuiRuntimeSnapshot> {
+export async function buildTuiRuntimeSnapshot(input: BuildTuiRuntimeSnapshotInput): Promise<TuiRuntimeSnapshot> {
   const statuses = await readStatuses(input)
   const loop = readActiveLoop(input.projectDir)
 

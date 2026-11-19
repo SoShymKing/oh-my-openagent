@@ -12,8 +12,10 @@ type CleanupRegistration = {
   shutdown: () => void | Promise<void>
 }
 
-type CleanupSessionTeamRunsFn = typeof import("./features/team-mode/team-runtime/session-cleanup").cleanupSessionTeamRuns
-type ReconcilePersistedSessionRetentionFn = typeof import("./features/background-agent/session-retention").reconcilePersistedSessionRetention
+type CleanupSessionTeamRunsFn =
+  typeof import("./features/team-mode/team-runtime/session-cleanup").cleanupSessionTeamRuns
+type ReconcilePersistedSessionRetentionFn =
+  typeof import("./features/background-agent/session-retention").reconcilePersistedSessionRetention
 
 const markServerRunningInProcess = mock(() => {})
 let backgroundManagerOptions: {

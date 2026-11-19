@@ -56,8 +56,9 @@ export class ParentWakePendingQueue {
     if (pendingWake) {
       pendingWake.queuedAt ??= now
       const mergedNotifications = mergeParentWakeNotifications(pendingWake.notifications, notification)
-      const notificationsChanged = mergedNotifications.length !== pendingWake.notifications.length
-        || mergedNotifications.some((merged, index) => merged !== pendingWake.notifications[index])
+      const notificationsChanged =
+        mergedNotifications.length !== pendingWake.notifications.length ||
+        mergedNotifications.some((merged, index) => merged !== pendingWake.notifications[index])
       const childSessionIDs = mergeParentWakeChildSessionIDs(
         pendingWake.childSessionIDs,
         childSessionID === undefined ? undefined : [childSessionID],

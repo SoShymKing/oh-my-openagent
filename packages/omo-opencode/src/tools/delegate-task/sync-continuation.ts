@@ -44,10 +44,7 @@ type ResumeContext = {
   retentionCheckpoint?: SessionRetentionCheckpoint
 }
 
-async function resolveResumeContext(
-  client: ExecutorContext["client"],
-  continuationID: string
-): Promise<ResumeContext> {
+async function resolveResumeContext(client: ExecutorContext["client"], continuationID: string): Promise<ResumeContext> {
   let messagesResp: unknown
   try {
     messagesResp = await client.session.messages({ path: { id: continuationID } })
@@ -61,9 +58,10 @@ async function resolveResumeContext(
 
     return {
       resumeAgent: prevMessage?.agent,
-      resumeModel: resumeMessageModel?.providerID && resumeMessageModel.modelID
-        ? { providerID: resumeMessageModel.providerID, modelID: resumeMessageModel.modelID }
-        : undefined,
+      resumeModel:
+        resumeMessageModel?.providerID && resumeMessageModel.modelID
+          ? { providerID: resumeMessageModel.providerID, modelID: resumeMessageModel.modelID }
+          : undefined,
       resumeVariant: resumeMessageModel?.variant,
     }
   }
@@ -111,7 +109,7 @@ export async function executeSyncContinuation(
   executorCtx: ExecutorContext,
   parentContext: ParentContext,
   deps: SyncContinuationDeps = syncContinuationDeps,
-  systemContent?: string
+  systemContent?: string,
 ): Promise<string> {
   const { client, syncPollTimeoutMs, sisyphusAgentConfig } = executorCtx
   const toastManager = getTaskToastManager()
@@ -180,9 +178,8 @@ export async function executeSyncContinuation(
     anchorMessageCount = resumeContext.anchorMessageCount
     anchorMessageID = resumeContext.anchorMessageID
 
-    const resumeModelForMetadata = resumeModel && resumeVariant !== undefined
-      ? { ...resumeModel, variant: resumeVariant }
-      : resumeModel
+    const resumeModelForMetadata =
+      resumeModel && resumeVariant !== undefined ? { ...resumeModel, variant: resumeVariant } : resumeModel
     const previousCheckpoint = resumeContext.retentionCheckpoint?.mode === "sync"
       ? resumeContext.retentionCheckpoint
       : undefined
@@ -212,7 +209,9 @@ export async function executeSyncContinuation(
         prompt: args.prompt,
         ...(resumeAgent !== undefined ? { agent: resumeAgent } : {}),
         ...(args.category !== undefined ? { category: args.category } : {}),
-        ...(args.requested_subagent_type !== undefined ? { requested_subagent_type: args.requested_subagent_type } : {}),
+        ...(args.requested_subagent_type !== undefined
+          ? { requested_subagent_type: args.requested_subagent_type }
+          : {}),
         load_skills: args.load_skills,
         description: args.description,
         run_in_background: args.run_in_background,
@@ -241,20 +240,24 @@ export async function executeSyncContinuation(
     releasePromptAsyncReservation(continuationID, "sync-continuation", {
       reservedBy: "session-retention-checkpoint",
     })
-    await promptWithModelSuggestionRetry(client, {
-      path: { id: continuationID },
-      body: {
-        ...(resumeAgent !== undefined ? { agent: resumeAgent } : {}),
-        ...(resumeModel !== undefined ? { model: resumeModel } : {}),
-        ...(resumeVariant !== undefined ? { variant: resumeVariant } : {}),
-        system: systemContent,
-        tools,
-        parts: [{ type: "text", text: effectivePrompt }],
+    await promptWithModelSuggestionRetry(
+      client,
+      {
+        path: { id: continuationID },
+        body: {
+          ...(resumeAgent !== undefined ? { agent: resumeAgent } : {}),
+          ...(resumeModel !== undefined ? { model: resumeModel } : {}),
+          ...(resumeVariant !== undefined ? { variant: resumeVariant } : {}),
+          system: systemContent,
+          tools,
+          parts: [{ type: "text", text: effectivePrompt }],
+        },
       },
-    }, {
-      queueBehavior: "defer",
-      checkToolState: false,
-    })
+      {
+        queueBehavior: "defer",
+        checkToolState: false,
+      },
+    )
     await recordSyncSessionRetentionCheckpoint(client, retentionCheckpoint, executorCtx.directory)
   } catch (promptError) {
     clearSyncSessionError(continuationID)
@@ -340,11 +343,11 @@ ${buildTaskMetadataBlock({
 ${result.textContent || "(No text output)"}
 
 ${buildTaskMetadataBlock({
-      sessionId: continuationID,
-      taskId: continuationID,
-      agent: resumeAgent,
-      category: args.category,
-    })}`
+  sessionId: continuationID,
+  taskId: continuationID,
+  agent: resumeAgent,
+  category: args.category,
+})}`
   } finally {
     if (toastManager) {
       toastManager.removeTask(taskId)

@@ -7,7 +7,10 @@ import { clearBackgroundTaskRegistryForTesting } from "../../features/background
 import { createChatParamsHandler } from "../../plugin/chat-params"
 import * as connectedProvidersCache from "../../shared/connected-providers-cache"
 import { clearAllSessionPromptParams } from "../../shared/session-prompt-params-state"
-import { releaseAllPromptAsyncReservationsForTesting, releasePromptAsyncReservation } from "../../shared/prompt-async-gate"
+import {
+  releaseAllPromptAsyncReservationsForTesting,
+  releasePromptAsyncReservation,
+} from "../../shared/prompt-async-gate"
 import type { CategoryConfig } from "../../config/schema"
 import { DEFAULT_CATEGORIES } from "./builtin-categories"
 import { resolveCategoryExecution } from "./category-resolver"
@@ -41,9 +44,19 @@ const cases: Array<{
   variant?: string
   effort?: string
 }> = [
-  { name: "user model reasoning", config: { model: "openai/gpt-5.4", reasoning: "high" }, variant: "high" },
-  { name: "user models reasoning", config: { models: [{ model: "openai/gpt-5.4", reasoning: "high" }] }, variant: "high" },
-  { name: "promoted models reasoning", config: { models: ["fixture/unavailable", { model: "openai/gpt-5.4", reasoning: "high" }] }, variant: "high" },
+  { name: "user model reasoning", config: { model: "openai/gpt-5.4", reasoning: "high" }, variant: "high", effort: "high" },
+  {
+    name: "user models reasoning",
+    config: { models: [{ model: "openai/gpt-5.4", reasoning: "high" }] },
+    variant: "high",
+    effort: "high",
+  },
+  {
+    name: "promoted models reasoning",
+    config: { models: ["fixture/unavailable", { model: "openai/gpt-5.4", reasoning: "high" }] },
+    variant: "high",
+    effort: "high",
+  },
   { name: "builtin model", variant: builtin.variant },
   {
     name: "builtin fallback without own variant",
@@ -52,12 +65,22 @@ const cases: Array<{
     expectedModel: { providerID: "xai", modelID: "grok-4.20-0309-non-reasoning" },
     variant: "low",
   },
-  { name: "loaded reasoning overrides legacy variant", config: { model: "openai/gpt-5.4", variant: "low", reasoning: "high" }, variant: "high" },
-  { name: "loaded reasoning overrides legacy default", config: { model: "openai/gpt-5.4", variant: "default", reasoning: "high" }, variant: "high" },
-  { name: "loaded legacy default", config: { model: "openai/gpt-5.4", variant: "default" }, variant: "default" },
-  { name: "entry variant", config: { models: [{ model: "openai/gpt-5.4", variant: "low" }] }, variant: "low" },
-  { name: "user model without level", config: { model: "openai/gpt-5.4" } },
-  { name: "user chain without level", config: { models: ["openai/gpt-5.4"] } },
+  {
+    name: "loaded reasoning overrides legacy variant",
+    config: { model: "openai/gpt-5.4", variant: "low", reasoning: "high" },
+    variant: "high",
+    effort: "high",
+  },
+  {
+    name: "loaded reasoning overrides legacy default",
+    config: { model: "openai/gpt-5.4", variant: "default", reasoning: "high" },
+    variant: "high",
+    effort: "high",
+  },
+  { name: "loaded legacy default", config: { model: "openai/gpt-5.4", variant: "default" }, variant: "default", effort: "medium" },
+  { name: "entry variant", config: { models: [{ model: "openai/gpt-5.4", variant: "low" }] }, variant: "low", effort: "low" },
+  { name: "user model without level", config: { model: "openai/gpt-5.4" }, effort: "medium" },
+  { name: "user chain without level", config: { models: ["openai/gpt-5.4"] }, effort: "medium" },
   { name: "native effort without variant", config: { model: "openai/gpt-5.4", reasoning: "off" }, effort: "none" },
 ]
 
@@ -126,12 +149,19 @@ describe("category settings at provider request boundaries", () => {
         }
         try {
           // when
-          const resolution = await resolveCategoryExecution(args, {
-            client: unsafeTestValue(client),
-            manager,
-            directory: "/tmp",
-            userCategories: entry.config ? { [args.category!]: OmoCategoryConfigSchema.parse(entry.config) } : undefined,
-          }, undefined, undefined)
+          const resolution = await resolveCategoryExecution(
+            args,
+            {
+              client: unsafeTestValue(client),
+              manager,
+              directory: "/tmp",
+              userCategories: entry.config
+                ? { [args.category!]: OmoCategoryConfigSchema.parse(entry.config) }
+                : undefined,
+            },
+            undefined,
+            undefined,
+          )
           expect(resolution.error).toBeUndefined()
           expect(resolution.categoryModel).toBeDefined()
 
@@ -143,20 +173,24 @@ describe("category settings at provider request boundaries", () => {
               defaultDirectory: "/tmp",
               categoryModel: resolution.categoryModel,
             })
-            const result = await sendSyncPrompt(unsafeTestValue(client), {
-              sessionID,
-              agentToUse: resolution.agentToUse,
-              args,
-              systemContent: undefined,
-              categoryModel: resolution.categoryModel,
-              directory: "/tmp",
-              toastManager: undefined,
-              taskId: undefined,
-            }, {
-              promptWithModelSuggestionRetry: async (_client, input) => {
-                dispatched.resolve(unsafeTestValue(input))
+            const result = await sendSyncPrompt(
+              unsafeTestValue(client),
+              {
+                sessionID,
+                agentToUse: resolution.agentToUse,
+                args,
+                systemContent: undefined,
+                categoryModel: resolution.categoryModel,
+                directory: "/tmp",
+                toastManager: undefined,
+                taskId: undefined,
               },
-            })
+              {
+                promptWithModelSuggestionRetry: async (_client, input) => {
+                  dispatched.resolve(unsafeTestValue(input))
+                },
+              },
+            )
             expect(result).toBeNull()
           } else {
             const task = await manager.launch({
@@ -180,9 +214,11 @@ describe("category settings at provider request boundaries", () => {
               // End the first attempt before subscribing to the continuation dispatch.
               const runningTask = manager.getTask(task.id)
               if (!runningTask) throw new Error("Launched task was not registered")
-              expect(await unsafeTestValue<{
-                tryCompleteTask: (task: BackgroundTask, source: string) => Promise<boolean>
-              }>(manager).tryCompleteTask(runningTask, "test")).toBe(true)
+              expect(
+                await unsafeTestValue<{
+                  tryCompleteTask: (task: BackgroundTask, source: string) => Promise<boolean>
+                }>(manager).tryCompleteTask(runningTask, "test"),
+              ).toBe(true)
               await checkpointDispatched.promise
               await new Promise<void>(resolve => setImmediate(resolve))
               releasePromptAsyncReservation(sessionID, "category-dispatch-test", {
@@ -200,24 +236,39 @@ describe("category settings at provider request boundaries", () => {
           const request = await dispatched.promise
           if (entry.expectedModel) expect(request.body.model).toEqual(entry.expectedModel)
           const dispatchedVariant = request.body.variant
-          const output = { options: { ...request.body.options } }
-          await createChatParamsHandler()({
-            sessionID,
-            agent: request.body.agent,
-            model: request.body.model,
-            provider: { id: request.body.model.providerID },
-            message: request.body,
-          }, output)
-          // then: session creation and the provider-facing hook agree.
+          const originalMessage = structuredClone(request.body)
+          const message = Object.freeze(request.body)
+          const variants: Record<string, { reasoningEffort: string }> =
+            request.body.model.modelID === "gpt-5.4"
+              ? { high: { reasoningEffort: "high" }, low: { reasoningEffort: "low" } }
+              : {}
+          // OpenCode expands variants before chat.params; an absent preset keeps base options.
+          const output = {
+            options: {
+              ...(request.body.model.modelID === "gpt-5.4" ? { reasoningEffort: "medium" } : {}),
+              ...request.body.options,
+              ...(dispatchedVariant ? variants[dispatchedVariant] : {}),
+            },
+          }
+          await createChatParamsHandler()(
+            Object.freeze({
+              sessionID,
+              agent: request.body.agent,
+              model: { ...request.body.model, variants },
+              provider: { id: request.body.model.providerID },
+              message,
+            }),
+            output,
+          )
+          // then: immutable dispatch input and effective provider options both survive.
+          expect(request.body).toEqual(originalMessage)
           expect({
             createdVariant: created[0]?.body.model?.variant,
             dispatchedVariant,
-            providerVariant: request.body.variant,
             reasoningEffort: output.options.reasoningEffort,
           }).toEqual({
             createdVariant: entry.variant,
             dispatchedVariant: entry.variant,
-            providerVariant: entry.variant === "default" ? undefined : entry.variant,
             reasoningEffort: entry.effort,
           })
         } finally {
@@ -230,12 +281,16 @@ describe("category settings at provider request boundaries", () => {
 
 test("direct agent override does not inherit its category's builtin variant", async () => {
   // given / when
-  const result = await resolveSubagentModel("explore", { name: "explore", mode: "subagent" }, {
-    client: unsafeTestValue({}),
-    manager: unsafeTestValue({}),
-    directory: "/tmp",
-    agentOverrides: { explore: { model: "openai/gpt-5.4", category: "unspecified-high" } },
-  })
+  const result = await resolveSubagentModel(
+    "explore",
+    { name: "explore", mode: "subagent" },
+    {
+      client: unsafeTestValue({}),
+      manager: unsafeTestValue({}),
+      directory: "/tmp",
+      agentOverrides: { explore: { model: "openai/gpt-5.4", category: "unspecified-high" } },
+    },
+  )
   // then
   expect(result.categoryModel).toEqual({ providerID: "openai", modelID: "gpt-5.4" })
 })

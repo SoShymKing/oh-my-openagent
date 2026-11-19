@@ -35,8 +35,7 @@ export function createPluginInterface(args: {
   hooks: CreatedHooks
   tools: ToolsRecord
 }): PluginInterface {
-  const { ctx, pluginConfig, firstMessageVariantGate, managers, hooks, tools } =
-    args
+  const { ctx, pluginConfig, firstMessageVariantGate, managers, hooks, tools } = args
   const toolSnippets = Object.fromEntries(
     Object.entries(tools).map(([name, definition]) => [name, toolPromptSnippet(definition.description)]),
   )

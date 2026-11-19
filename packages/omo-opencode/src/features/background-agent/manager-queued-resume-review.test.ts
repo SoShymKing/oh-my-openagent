@@ -42,12 +42,14 @@ function createResumeFixture(busy = false) {
   const manager = new BackgroundManager({
     pluginContext: unsafeTestValue<PluginInput>({
       directory,
-      client: { session: {
-        status: async () => ({ data: busy ? { child: { type: "busy" } } : {} }),
-        promptAsync,
-        abort: async () => ({}),
-        messages: async () => ({ data: [] }),
-      } },
+      client: {
+        session: {
+          status: async () => ({ data: busy ? { child: { type: "busy" } } : {} }),
+          promptAsync,
+          abort: async () => ({}),
+          messages: async () => ({ data: [] }),
+        },
+      },
     }),
     config: { defaultConcurrency: 1 },
     enableParentSessionNotifications: false,
@@ -56,15 +58,25 @@ function createResumeFixture(busy = false) {
   fixtures.push({ manager, directory })
   const internals = unsafeTestValue<Internals>(manager)
   const task: BackgroundTask = {
-    id: "resume-review", sessionId: "child", agent: "explore", status: "completed",
-    description: "review task", prompt: "original", parentSessionId: "old-parent",
-    parentMessageId: "old-message", completedAt: new Date(),
+    id: "resume-review",
+    sessionId: "child",
+    agent: "explore",
+    status: "completed",
+    description: "review task",
+    prompt: "original",
+    parentSessionId: "old-parent",
+    parentMessageId: "old-message",
+    completedAt: new Date(),
   }
   internals.tasks.set(task.id, task)
   internals.tasksByParentSession.set(task.parentSessionId, new Set([task.id]))
   manager.taskHistory.record(task.parentSessionId, {
-    id: task.id, sessionID: task.sessionId, agent: task.agent,
-    description: task.description, status: task.status, completedAt: task.completedAt,
+    id: task.id,
+    sessionID: task.sessionId,
+    agent: task.agent,
+    description: task.description,
+    status: task.status,
+    completedAt: task.completedAt,
   })
   return { manager, internals, task, directory, promptAsync, log }
 }
@@ -72,13 +84,18 @@ function createResumeFixture(busy = false) {
 async function queueResume(parentSessionId = "new-parent", busy = false) {
   const fixture = createResumeFixture(busy)
   await fixture.internals.concurrencyManager.acquire("explore")
-  await fixture.manager.resume({ sessionId: "child", prompt: "latest", parentSessionId, parentMessageId: "new-message" })
+  await fixture.manager.resume({
+    sessionId: "child",
+    prompt: "latest",
+    parentSessionId,
+    parentMessageId: "new-message",
+  })
   expect(sessionOperationLeases.hasActive("child")).toBe(true)
   return fixture
 }
 
 // One event-loop turn drains admission and prompt-gate microtasks without a timed sleep.
-const settleAdmission = () => new Promise<void>(resolve => setImmediate(resolve))
+const settleAdmission = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 describe("queued resume review regressions", () => {
   test("clears the temporary parent's marker after skipped admission", async () => {
@@ -94,14 +111,14 @@ describe("queued resume review regressions", () => {
     expect(readContinuationMarker(directory, "new-parent")?.sources["background-task"]?.state).toBe("idle")
   })
 
-  test.each(["old-parent", "new-parent"])("restores history after skipped admission from %s", async parent => {
+  test.each(["old-parent", "new-parent"])("restores history after skipped admission from %s", async (parent) => {
     // given
     const { manager, internals } = await queueResume(parent, true)
     // when
     internals.concurrencyManager.release("explore")
     await settleAdmission()
     // then
-    expect(manager.taskHistory.getByParentSession("old-parent").map(entry => entry.status)).toEqual(["completed"])
+    expect(manager.taskHistory.getByParentSession("old-parent").map((entry) => entry.status)).toEqual(["completed"])
     expect(manager.taskHistory.getByParentSession("new-parent")).toEqual([])
   })
 
@@ -131,7 +148,7 @@ describe("queued resume review regressions", () => {
     expect(promptAsync).toHaveBeenCalledTimes(1)
     expect(task.status).toBe("running")
     expect(sessionOperationLeases.hasActive("child")).toBe(false)
-    expect(manager.taskHistory.getByParentSession("new-parent").map(entry => entry.status)).toEqual(["running"])
+    expect(manager.taskHistory.getByParentSession("new-parent").map((entry) => entry.status)).toEqual(["running"])
   })
 
   test("settles the queued parent's marker during shutdown", async () => {
@@ -154,14 +171,19 @@ describe("queued resume review regressions", () => {
     internals.concurrencyManager.release("explore")
     await settleAdmission()
     // then
-    expect(log.mock.calls.some(call => JSON.stringify(call).includes("admission-dispatch-failure"))).toBe(true)
+    expect(log.mock.calls.some((call) => JSON.stringify(call).includes("admission-dispatch-failure"))).toBe(true)
   })
 
   test("refuses a second continuation while one is queued", async () => {
     // given
     const { manager } = await queueResume("new-parent", true)
     // when
-    const second = manager.resume({ sessionId: "child", prompt: "second", parentSessionId: "new-parent", parentMessageId: "third-message" })
+    const second = manager.resume({
+      sessionId: "child",
+      prompt: "second",
+      parentSessionId: "new-parent",
+      parentMessageId: "third-message",
+    })
     // then
     await expect(second).rejects.toThrow("already has a continuation queued")
   })
@@ -179,7 +201,7 @@ describe("queued resume review regressions", () => {
     expect(promptAsync.mock.calls[0]?.[0].body?.noReply).toBe(true)
     expect(sessionOperationLeases.hasActive("child")).toBe(false)
     expect(internals.pendingByParent.has("new-parent")).toBe(false)
-    expect(manager.taskHistory.getByParentSession("new-parent").map(entry => entry.status)).toEqual(["cancelled"])
+    expect(manager.taskHistory.getByParentSession("new-parent").map((entry) => entry.status)).toEqual(["cancelled"])
     expect(readContinuationMarker(directory, "new-parent")?.sources["background-task"]?.state).toBe("idle")
   })
 
@@ -198,7 +220,7 @@ describe("queued resume review regressions", () => {
     expect(promptAsync.mock.calls[0]?.[0].body?.noReply).toBe(true)
     expect(sessionOperationLeases.hasActive("child")).toBe(false)
     expect(internals.pendingByParent.has("new-parent")).toBe(false)
-    expect(manager.taskHistory.getByParentSession("new-parent").map(entry => entry.status)).toEqual(["cancelled"])
+    expect(manager.taskHistory.getByParentSession("new-parent").map((entry) => entry.status)).toEqual(["cancelled"])
     expect(readContinuationMarker(directory, "new-parent")?.sources["background-task"]?.state).toBe("idle")
   })
 
@@ -210,26 +232,41 @@ describe("queued resume review regressions", () => {
       throw new Error("model unavailable")
     })
     await internals.concurrencyManager.acquire("explore")
-    await manager.resume({ sessionId: "child", prompt: "latest", parentSessionId: "new-parent", parentMessageId: "new-message" })
+    await manager.resume({
+      sessionId: "child",
+      prompt: "latest",
+      parentSessionId: "new-parent",
+      parentMessageId: "new-message",
+    })
     // when
     internals.concurrencyManager.release("explore")
     await settleAdmission()
     // The failure catch is fire-and-forget; wait for the terminal transition to settle.
     for (let i = 0; i < 100 && task.status !== "interrupt"; i++) {
-      await new Promise(resolve => setTimeout(resolve, 5))
+      await new Promise((resolve) => setTimeout(resolve, 5))
     }
     // then
     expect(promptAsync).toHaveBeenCalledTimes(1)
     expect(task.status).toBe("interrupt")
-    expect(manager.taskHistory.getByParentSession("new-parent").map(entry => entry.status)).toEqual(["interrupt"])
+    expect(manager.taskHistory.getByParentSession("new-parent").map((entry) => entry.status)).toEqual(["interrupt"])
   })
 
   test("refuses a second resume issued while the first awaits immediate admission", async () => {
     // given
     const { manager, internals, task, promptAsync, directory } = createResumeFixture()
     // when
-    const first = manager.resume({ sessionId: "child", prompt: "first", parentSessionId: "first-parent", parentMessageId: "first-message" })
-    const second = manager.resume({ sessionId: "child", prompt: "second", parentSessionId: "second-parent", parentMessageId: "second-message" })
+    const first = manager.resume({
+      sessionId: "child",
+      prompt: "first",
+      parentSessionId: "first-parent",
+      parentMessageId: "first-message",
+    })
+    const second = manager.resume({
+      sessionId: "child",
+      prompt: "second",
+      parentSessionId: "second-parent",
+      parentMessageId: "second-message",
+    })
     const [firstResult, secondResult] = await Promise.allSettled([first, second])
     await settleAdmission()
     // then

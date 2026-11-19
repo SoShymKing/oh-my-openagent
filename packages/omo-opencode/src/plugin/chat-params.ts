@@ -26,8 +26,6 @@ export type ChatParamsOutput = {
   options: Record<string, unknown>
 }
 
-
-
 function buildChatParamsInput(raw: unknown): ChatParamsHookInput | null {
   if (!isRecord(raw)) return null
 
@@ -54,22 +52,23 @@ function buildChatParamsInput(raw: unknown): ChatParamsHookInput | null {
   if (!agentName) return null
 
   const providerID = model.providerID
-  const modelID = typeof model.modelID === "string"
-    ? model.modelID
-    : typeof model.id === "string"
-      ? model.id
-      : undefined
+  const modelID =
+    typeof model.modelID === "string" ? model.modelID : typeof model.id === "string" ? model.id : undefined
   const providerId = isRecord(provider.info) ? provider.info.id : provider.id
   if (typeof providerID !== "string") return null
   if (typeof modelID !== "string") return null
   if (typeof providerId !== "string") return null
+
+  const variant = isRecord(message.model) && typeof message.model.variant === "string"
+    ? message.model.variant
+    : typeof message.variant === "string" ? message.variant : undefined
 
   return {
     sessionID,
     agent: { name: agentName },
     model: { providerID, modelID },
     provider: { id: providerId },
-    message,
+    message: { variant },
     runtimeModel: model,
   }
 }
@@ -82,10 +81,12 @@ function isChatParamsOutput(raw: unknown): raw is ChatParamsOutput {
   return isRecord(raw.options)
 }
 
-export function createChatParamsHandler(args: {
-  client?: unknown
-  pluginConfig?: OhMyOpenCodeConfig
-} = {}): (input: unknown, output: unknown) => Promise<void> {
+export function createChatParamsHandler(
+  args: {
+    client?: unknown
+    pluginConfig?: OhMyOpenCodeConfig
+  } = {},
+): (input: unknown, output: unknown) => Promise<void> {
   return async (input, output): Promise<void> => {
     const normalizedInput = buildChatParamsInput(input)
     if (!normalizedInput) return
@@ -123,11 +124,8 @@ export function createChatParamsHandler(args: {
       if (storedPromptParams.topP !== undefined) {
         output.topP = storedPromptParams.topP
       }
-      if (
-        typeof storedPromptParams.maxOutputTokens === "number" &&
-        storedPromptParams.maxOutputTokens > 0
-      ) {
-        (output as Record<string, unknown>).maxOutputTokens = storedPromptParams.maxOutputTokens
+      if (typeof storedPromptParams.maxOutputTokens === "number" && storedPromptParams.maxOutputTokens > 0) {
+        ;(output as Record<string, unknown>).maxOutputTokens = storedPromptParams.maxOutputTokens
       }
       if (storedPromptParams.options) {
         hasStoredReasoningEffortOverride = "reasoningEffort" in storedPromptParams.options
@@ -150,12 +148,9 @@ export function createChatParamsHandler(args: {
       providerID: normalizedInput.model.providerID,
       modelID: normalizedInput.model.modelID,
       desired: {
-        variant: typeof normalizedInput.message.variant === "string"
-          ? normalizedInput.message.variant
-          : undefined,
-        reasoningEffort: typeof output.options.reasoningEffort === "string"
-          ? output.options.reasoningEffort
-          : undefined,
+        variant: typeof normalizedInput.message.variant === "string" ? normalizedInput.message.variant : undefined,
+        reasoningEffort:
+          typeof output.options.reasoningEffort === "string" ? output.options.reasoningEffort : undefined,
         temperature: typeof output.temperature === "number" ? output.temperature : undefined,
         topP: typeof output.topP === "number" ? output.topP : undefined,
         maxTokens: typeof output.maxOutputTokens === "number" ? output.maxOutputTokens : undefined,
@@ -192,9 +187,8 @@ export function createChatParamsHandler(args: {
       if (compatibility.maxTokens !== undefined && compatibility.maxTokens > 0) {
         output.maxOutputTokens = compatibility.maxTokens
       } else {
-        const originalMaxOutputTokens = typeof output.maxOutputTokens === "number"
-          ? output.maxOutputTokens
-          : compatibility.maxTokens
+        const originalMaxOutputTokens =
+          typeof output.maxOutputTokens === "number" ? output.maxOutputTokens : compatibility.maxTokens
         output.maxOutputTokens = SAFE_MAX_OUTPUT_TOKENS_FALLBACK
         if (typeof originalMaxOutputTokens === "number" && originalMaxOutputTokens <= 0) {
           log(

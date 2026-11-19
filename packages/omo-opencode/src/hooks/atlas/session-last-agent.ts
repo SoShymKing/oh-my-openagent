@@ -41,27 +41,35 @@ async function getLastAgentFromSessionMessages(
   requestOptions?: SessionMessageRequestOptions,
 ): Promise<string | null> {
   try {
-    const response = await client.session.messages(requestOptions
-      ? { path: { id: sessionID }, query: requestOptions }
-      : { path: { id: sessionID } })
-    const messages = deps.normalizeSDKResponse(response, [] as Array<{
-      id?: string
-      agent?: string
-      info?: { agent?: string; time?: { created?: number } }
-      parts?: Array<{ type?: string }>
-    }>, {
-      preferResponseOnMissingData: true,
-    }).sort((left, right) => {
-      const leftTime = (left as { info?: { time?: { created?: number } } }).info?.time?.created ?? Number.NEGATIVE_INFINITY
-      const rightTime = (right as { info?: { time?: { created?: number } } }).info?.time?.created ?? Number.NEGATIVE_INFINITY
-      if (leftTime !== rightTime) {
-        return rightTime - leftTime
-      }
+    const response = await client.session.messages(
+      requestOptions ? { path: { id: sessionID }, query: requestOptions } : { path: { id: sessionID } },
+    )
+    const messages = deps
+      .normalizeSDKResponse(
+        response,
+        [] as Array<{
+          id?: string
+          agent?: string
+          info?: { agent?: string; time?: { created?: number } }
+          parts?: Array<{ type?: string }>
+        }>,
+        {
+          preferResponseOnMissingData: true,
+        },
+      )
+      .sort((left, right) => {
+        const leftTime =
+          (left as { info?: { time?: { created?: number } } }).info?.time?.created ?? Number.NEGATIVE_INFINITY
+        const rightTime =
+          (right as { info?: { time?: { created?: number } } }).info?.time?.created ?? Number.NEGATIVE_INFINITY
+        if (leftTime !== rightTime) {
+          return rightTime - leftTime
+        }
 
-      const leftId = typeof left.id === "string" ? left.id : ""
-      const rightId = typeof right.id === "string" ? right.id : ""
-      return rightId.localeCompare(leftId)
-    })
+        const leftId = typeof left.id === "string" ? left.id : ""
+        const rightId = typeof right.id === "string" ? right.id : ""
+        return rightId.localeCompare(leftId)
+      })
 
     for (const message of messages) {
       if (deps.isCompactionMessage(message)) {
@@ -124,12 +132,22 @@ export async function getLastAgentFromSession(
           return null
         }
       })
-      .filter((message): message is { fileName: string; id: string | undefined; agent: unknown; createdAt: number } => message !== null)
-      .sort((left, right) => (right?.createdAt ?? 0) - (left?.createdAt ?? 0) || (right?.fileName ?? "").localeCompare(left?.fileName ?? ""))
+      .filter(
+        (message): message is { fileName: string; id: string | undefined; agent: unknown; createdAt: number } =>
+          message !== null,
+      )
+      .sort(
+        (left, right) =>
+          (right?.createdAt ?? 0) - (left?.createdAt ?? 0) ||
+          (right?.fileName ?? "").localeCompare(left?.fileName ?? ""),
+      )
 
     for (const message of messages) {
       if (!message) continue
-      if (resolvedDeps.isCompactionMessage({ agent: message.agent }) || resolvedDeps.hasCompactionPartInStorage(message?.id)) {
+      if (
+        resolvedDeps.isCompactionMessage({ agent: message.agent }) ||
+        resolvedDeps.hasCompactionPartInStorage(message?.id)
+      ) {
         continue
       }
 

@@ -46,7 +46,14 @@ describe("createCompactionContextInjector prompt", () => {
     it("injects actual task history when backgroundManager and sessionID provided", async () => {
       //#given
       const mockManager = createMockBackgroundManager()
-      mockManager.taskHistory.record("ses_parent", { id: "t1", sessionID: "ses_child", agent: "explore", description: "Find patterns", status: "completed", category: "quick" })
+      mockManager.taskHistory.record("ses_parent", {
+        id: "t1",
+        sessionID: "ses_child",
+        agent: "explore",
+        description: "Find patterns",
+        status: "completed",
+        category: "quick",
+      })
       const injector = createCompactionContextInjector({ backgroundManager: mockManager })
 
       //#when
@@ -60,7 +67,14 @@ describe("createCompactionContextInjector prompt", () => {
     it("does not inject task history section when no entries exist", async () => {
       //#given
       const mockManager = createMockBackgroundManager()
-      mockManager.taskHistory.record("ses_other", { id: "other", sessionID: "ses_child_other", agent: "explore", description: "Unrelated", status: "completed", category: "quick" })
+      mockManager.taskHistory.record("ses_other", {
+        id: "other",
+        sessionID: "ses_child_other",
+        agent: "explore",
+        description: "Unrelated",
+        status: "completed",
+        category: "quick",
+      })
       const injector = createCompactionContextInjector({ backgroundManager: mockManager })
 
       //#when
