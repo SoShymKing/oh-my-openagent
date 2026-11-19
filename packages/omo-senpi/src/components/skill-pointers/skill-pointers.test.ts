@@ -15,6 +15,14 @@ import {
 import { dispatchInput, expectPointerInjections, registerSkillPointers } from "./test-support"
 
 describe("omo-senpi skill-pointers component", () => {
+  it("#given chained or inline loaded skills #when input arrives #then their pointers are deduplicated", async () => {
+    for (const text of ["/skill:browser /skill:ulw-loop ulw loop", "do $skill:ulw-loop with ulw loop"]) {
+      const pi = new FakeExtensionAPI()
+      await registerSkillPointers(pi)
+      await dispatchInput(pi, text)
+      expect(pi.messages).toHaveLength(0)
+    }
+  })
   describe("#given the keyword table", () => {
     it("#when given mass-ulw trigger spellings #then mass-ulw matches", () => {
       const triggers = [

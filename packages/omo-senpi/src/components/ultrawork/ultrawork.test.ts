@@ -24,6 +24,19 @@ import {
 const generatedDirectivePath = resolve("packages/omo-senpi/src/components/ultrawork/generated-directive.ts")
 
 describe("omo-senpi ultrawork component", () => {
+  it("#given chained and inline tokens #when classified #then only argument keywords arm", () => {
+    for (const [text, effective, route, suppressionReason] of [
+      ["/skill:browser /skill:ulw-plan fix it", false, "none", "skill_name_only"],
+      ["do $skill:ulw-plan now", false, "none", "skill_name_only"],
+      ["/skill:browser /skill:ulw-plan ulw fix it", true, "skill_args", "none"],
+      ["do $skill:browser ulw now", true, "skill_args", "none"],
+      ["/skill:browser /skill:ultrawork ulw fix it", false, "skill_expansion", "skill_expansion"],
+      ["do $skill:ultrawork ulw now", false, "skill_expansion", "skill_expansion"],
+    ] as const) {
+      expect(classifyUltraworkInput({ text, source: "interactive" }, { wasArmed: false, compactRearmPending: false }))
+        .toMatchObject({ effective, route, suppressionReason })
+    }
+  })
   it("#given a task child role #when a brief carrying the keyword is classified #then reports a suppressed child session", () => {
     expect(
       classifyUltraworkInput(
