@@ -73,7 +73,7 @@ describe("createChatParamsHandler", () => {
       agent: { name: "oracle" },
       model: { providerID: "openai", modelID: "gpt-5.4" },
       provider: { id: "openai" },
-      message: {},
+      message: Object.freeze({}),
     }
 
     const output: ChatParamsOutput = {
@@ -109,7 +109,7 @@ describe("createChatParamsHandler", () => {
     })
   })
 
-  test("keeps stored reasoning effort over a conflicting configured preset", async () => {
+  test("keeps stored reasoning effort over a conflicting configured preset with frozen input", async () => {
     //#given
     sharedModule.writeProviderModelsCache({
       connected: ["openai"],
@@ -146,7 +146,7 @@ describe("createChatParamsHandler", () => {
         },
       },
       provider: { id: "openai" },
-      message: {},
+      message: Object.freeze({}),
     }
     const output: ChatParamsOutput = { options: {} }
 
@@ -296,14 +296,24 @@ describe("createChatParamsHandler", () => {
     expect(output.maxOutputTokens).toBe(4096)
   })
 
-  test("preserves expanded options for a frozen explicit variant", async () => {
+  test.each([
+    ["legacy", Object.freeze({ variant: "high" }), { variant: "high" }],
+    ["SDK", Object.freeze({ model: Object.freeze({ variant: "high" }) }), { model: { variant: "high" } }],
+  ] as const)("preserves expanded options for a frozen %s explicit variant", async (_shape, message, expectedMessage) => {
     //#given
-    const handler = createChatParamsHandler()
-    const message = Object.freeze({ variant: "high" })
+    const handler = createChatParamsHandler({
+      pluginConfig: OhMyOpenCodeConfigSchema.parse({
+        agents: { oracle: { reasoning: "low" } },
+      }),
+    })
     const input = {
       sessionID: "ses_chat_params_frozen_explicit_variant",
       agent: { name: "oracle" },
-      model: { providerID: "openai", modelID: "gpt-5.4" },
+      model: {
+        providerID: "openai",
+        modelID: "gpt-5.4",
+        variants: { low: { reasoningEffort: "low", qaPreset: false } },
+      },
       provider: { id: "openai" },
       message,
     }
@@ -316,7 +326,7 @@ describe("createChatParamsHandler", () => {
 
     //#then
     expect(input.message).toBe(message)
-    expect(input.message).toEqual({ variant: "high" })
+    expect(input.message).toEqual(expectedMessage)
     expect(output.options).toEqual({ reasoningEffort: "high", qaPreset: true })
   })
 

@@ -407,7 +407,7 @@ describe("createPluginInterface - chat.params variant injection", () => {
     }
     const output: {
       options: { reasoningEffort?: string; qaPreset?: boolean }
-    } = { options: {} }
+    } = { options: { reasoningEffort: "medium", qaPreset: false } }
 
     // when
     await pluginInterface["chat.params"]?.(input as never, output as never)
