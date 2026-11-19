@@ -1,3 +1,5 @@
+import type { ModelFallbackHook } from "../../hooks/model-fallback/hook"
+
 export type FirstMessageVariantGate = {
   readonly shouldOverride: (sessionID: string) => boolean
   readonly markApplied: (sessionID: string) => void
@@ -53,7 +55,7 @@ type TodoContinuationEnforcerHook = {
 }
 
 export type ChatMessageHooks = {
-  modelFallback?: ChatMessageHook | null
+  modelFallback?: (ChatMessageHook & Partial<Pick<ModelFallbackHook, "hasPendingModelFallback">>) | null
   stopContinuationGuard?: StopContinuationGuard | null
   backgroundNotificationHook?: ChatMessageHook | null
   runtimeFallback?: ChatMessageHook | null

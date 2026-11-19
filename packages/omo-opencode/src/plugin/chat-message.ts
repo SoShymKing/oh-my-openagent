@@ -84,6 +84,8 @@ export function createChatMessageHandler(args: {
     if (isSyntheticOrInternalOnlyTextParts(output.parts)) {
       if (isRuntimeFallbackRetryTextParts(output.parts)) {
         await hooks.runtimeFallback?.["chat.message"]?.(input, output)
+      } else if (!runtimeFallbackEnabled && hooks.modelFallback?.hasPendingModelFallback?.(input.sessionID)) {
+        await hooks.modelFallback["chat.message"]?.(input, output)
       }
       log("[chat-message] Skipping synthetic/internal-only message", {
         sessionID: input.sessionID,

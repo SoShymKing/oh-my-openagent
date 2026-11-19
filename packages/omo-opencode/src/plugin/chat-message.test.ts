@@ -16,10 +16,11 @@ import {
 } from "../features/claude-code-session-state"
 import { createAutoSlashCommandHook } from "../hooks/auto-slash-command"
 import { validateObjective } from "../hooks/goal/validation"
+import { createModelFallbackHook } from "../hooks/model-fallback/hook"
 import { createUlwExecuteHook } from "../hooks/ulw-execute"
 import { getAgentListDisplayName } from "../shared/agent-display-names"
 import { getOmoOpenCodeCacheDir, getOpenCodeCacheDir } from "../shared/data-path"
-import { OMO_INTERNAL_INITIATOR_MARKER } from "../shared/internal-initiator-marker"
+import { createInternalAgentContinuationTextPart, OMO_INTERNAL_INITIATOR_MARKER } from "../shared/internal-initiator-marker"
 import { clearSessionModel, getSessionModel, setSessionModel } from "../shared/session-model-state"
 import { createChatMessageHandler } from "./chat-message"
 import type { PluginContext } from "./types"
@@ -133,10 +134,92 @@ afterEach(() => {
 })
 
 describe("createChatMessageHandler - synthetic/internal messages", () => {
+  test.each([
+    {
+      name: "pending same-session fallback applies once",
+      pendingSession: "test-session",
+      runtimeFallback: false,
+      model: "gpt-valid",
+    },
+    { name: "no pending fallback leaves the model alone", pendingSession: "", runtimeFallback: false, model: "gpt-fail" },
+    {
+      name: "another session's pending fallback stays isolated",
+      pendingSession: "other-session",
+      runtimeFallback: false,
+      model: "gpt-fail",
+    },
+    {
+      name: "enabled runtime fallback takes priority",
+      pendingSession: "test-session",
+      runtimeFallback: true,
+      model: "gpt-fail",
+    },
+    {
+      name: "enabled runtime fallback object takes priority",
+      pendingSession: "test-session",
+      runtimeFallback: { enabled: true },
+      model: "gpt-fail",
+    },
+  ])("$name on internal event continuations", async ({ pendingSession, runtimeFallback, model }) => {
+    // given
+    const modelFallback = createModelFallbackHook()
+    if (pendingSession) {
+      modelFallback.setSessionFallbackChain(pendingSession, [
+        { providers: ["openai"], model: "gpt-valid" },
+        { providers: ["openai"], model: "gpt-next" },
+      ])
+      expect(modelFallback.setPendingModelFallback(pendingSession, "explore", "openai", "gpt-fail")).toBe(true)
+    }
+    const args = createMockHandlerArgs({
+      shouldOverride: true,
+      pluginConfig: { runtime_fallback: runtimeFallback, default_mode: { goal: true } },
+    })
+    const shouldOverride = mock(() => true)
+    args.firstMessageVariantGate = { ...args.firstMessageVariantGate, shouldOverride }
+    const keywordHook = mock(async () => {})
+    const runtimeHook = mock(async () => {})
+    const goalMock = createGoalHookMock()
+    args.hooks.modelFallback = modelFallback
+    args.hooks.runtimeFallback = { "chat.message": runtimeHook }
+    args.hooks.keywordDetector = { "chat.message": keywordHook }
+    args.hooks.goal = goalMock.hook
+    const handler = createChatMessageHandler(args)
+    const outputs: ChatMessageHandlerOutput[] = [0, 1].map(() => ({
+      message: { model: { providerID: "openai", modelID: "gpt-fail" } },
+      parts: [createInternalAgentContinuationTextPart("continue")],
+    }))
+
+    // when
+    for (const output of outputs) {
+      await handler(createMockInput("explore", { providerID: "openai", modelID: "gpt-fail" }), output)
+    }
+
+    // then
+    expect(outputs.map((output) => output.message.model)).toEqual([
+      { providerID: "openai", modelID: model },
+      { providerID: "openai", modelID: "gpt-fail" },
+    ])
+    expect(modelFallback.hasPendingModelFallback(pendingSession)).toBe(Boolean(pendingSession) && model === "gpt-fail")
+    expect(shouldOverride).not.toHaveBeenCalled()
+    expect(args._appliedSessions).toEqual([])
+    expect(getSessionAgent("test-session")).toBeUndefined()
+    expect(goalMock.setGoalCalls).toEqual([])
+    expect(keywordHook).not.toHaveBeenCalled()
+    expect(runtimeHook).not.toHaveBeenCalled()
+    expect(outputs.map((output) => output.parts)).toEqual([
+      [createInternalAgentContinuationTextPart("continue")],
+      [createInternalAgentContinuationTextPart("continue")],
+    ])
+  })
+
   test("acknowledges fallback-marked synthetic retries through runtime fallback before other hooks mutate", async () => {
     // given
     const hookCalls: string[] = []
     const args = createMockHandlerArgs({ shouldOverride: true })
+    const modelFallback = createModelFallbackHook()
+    modelFallback.setSessionFallbackChain("test-session", [{ providers: ["openai"], model: "gpt-valid" }])
+    expect(modelFallback.setPendingModelFallback("test-session", "explore", "openai", "gpt-fail")).toBe(true)
+    args.hooks.modelFallback = modelFallback
     args.hooks.keywordDetector = {
       "chat.message": async () => {
         hookCalls.push("keywordDetector")
@@ -165,6 +248,8 @@ describe("createChatMessageHandler - synthetic/internal messages", () => {
     // then
     expect(args._appliedSessions).toEqual([])
     expect(hookCalls).toEqual(["runtimeFallback"])
+    expect(modelFallback.hasPendingModelFallback("test-session")).toBe(true)
+    expect(output.message.model).toBeUndefined()
     expect(getSessionAgent("test-session")).toBeUndefined()
   })
 
