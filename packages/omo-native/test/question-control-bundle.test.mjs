@@ -1,12 +1,12 @@
-import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { prepareQuestionControl, questionControlBundleTarget } from "../bin/lib/question-control.js"
+import { prepareQuestionControl, questionControlBundleTargets } from "../bin/lib/question-control.js"
 import { extensionBase, writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const { createPendingQuestion } = await import(new URL("builtin/ask-user/pending.js", extensionBase).href)
-const { formatUserMessage } = await import(new URL("builtin/ask-user/format.js", extensionBase).href)
+const { formatUserMessage, showsPartialAnswers } = await import(new URL("builtin/ask-user/format.js", extensionBase).href)
 const { releaseQuestionInput } = await import(new URL("../question-input.js", extensionBase).href)
 const { WAKE_SOURCE_STATE_EVENT } = await import(new URL("builtin/monitor-state-event.js", extensionBase).href)
 const notify = await import(new URL("builtin/ask-user/notify.js", extensionBase).href)
@@ -22,20 +22,24 @@ function fixture() {
   writeQuestionFixture(root, { bundled: true })
   return root
 }
-function runtime(root) {
+function runtime(root, target) {
   prepareQuestionControl(root)
-  const source = readFileSync(join(root, questionControlBundleTarget), "utf8")
-  const registry = source.slice(source.indexOf("var sessions=new Map,outcomes2=new Map;"), source.indexOf("function copyAnswers("))
+  const source = readFileSync(join(root, target), "utf8")
+  const worker = target.endsWith("/session-worker.js")
+  const registry = worker
+    ? `var __getOwnPropNames=Object.getOwnPropertyNames;${source.slice(source.indexOf("var __esm="), source.indexOf("var __commonJS="))}
+      ${source.slice(source.indexOf("function queueQuestionOutcome("), source.indexOf("function emitAskUserClosed("))}init_registry4();`
+    : source.slice(source.indexOf("var sessions=new Map,outcomes2=new Map;"), source.indexOf("function copyAnswers("))
   const tool = source.slice(source.indexOf("function deliverAnswer("), source.indexOf("function createAskUserTool("))
   const runnerStart = source.indexOf("createContext(exclude")
   const runner = source.slice(runnerStart, source.indexOf("createToolContext(", runnerStart))
   // These are the actual prelinked owner functions, not separately implemented stand-ins.
-  return new Function("createPendingQuestion", "formatUserMessage", "releaseQuestionInput", "WAKE_SOURCE_STATE_EVENT", "notify", `
+  return new Function("createPendingQuestion", "formatUserMessage", "showsPartialAnswers", "releaseQuestionInput", "WAKE_SOURCE_STATE_EVENT", "notify", `
     const { ASK_USER_ASKED_EVENT, ASK_USER_QUESTION_ENTRY, ASK_USER_SETTLEMENT_ENTRY, emitAskUserClosed, emitAskUserNotification } = notify;
     ${registry}${tool}
     return { startQuestion, getPendingQuestions, deliverQueuedQuestionOutcomes,
       createContext: ({${runner}}).createContext };
-  `)(createPendingQuestion, formatUserMessage, releaseQuestionInput, WAKE_SOURCE_STATE_EVENT, notify)
+  `)(createPendingQuestion, formatUserMessage, showsPartialAnswers, releaseQuestionInput, WAKE_SOURCE_STATE_EVENT, notify)
 }
 function owner(runtime, sessionId) {
   const events = []
@@ -69,9 +73,10 @@ const request = (waitForAnswer) => ({
 })
 const answer = { requestId: "question", answers: { q: { selected: ["A"] } } }
 
+for (const target of questionControlBundleTargets) describe(target, () => {
 for (const wait of [true, false]) {
   test(`prelinked waitForAnswer=${wait} shares registry, guarded facade, UI completion and exactly-once delivery`, async () => {
-    const r = runtime(fixture())
+    const r = runtime(fixture(), target)
     const a = owner(r, "a")
     const b = owner(r, "b")
     const completion = r.startQuestion(a.pi, a.ctx, request(wait), undefined, {}, "codex")
@@ -94,7 +99,7 @@ for (const wait of [true, false]) {
   })
 
   test(`prelinked arrival observer can settle waitForAnswer=${wait} before UI attachment`, async () => {
-    const r = runtime(fixture())
+    const r = runtime(fixture(), target)
     const a = owner(r, "a")
     a.onAsked(() => expect(a.ctx.questions.respond(answer).success).toBe(true))
     expect((await r.startQuestion(a.pi, a.ctx, request(wait), undefined, {}, "codex")).status).toBe("answered")
@@ -103,8 +108,21 @@ for (const wait of [true, false]) {
   })
 }
 
+test("prelinked user cancellation preserves the draft and delivers it once", async () => {
+  const r = runtime(fixture(), target)
+  const a = owner(r, "a")
+  const completion = r.startQuestion(a.pi, a.ctx, request(false), undefined, {}, "codex")
+  a.ui[0].options.onProgress({ answers: answer.answers })
+  expect(a.ctx.questions.respond({ requestId: "question", cancelled: true }).outcome).toBe("cancelled")
+  expect(await completion).toMatchObject({ status: "cancelled", cancelOrigin: "user", answers: answer.answers })
+  expect(a.messages).toHaveLength(1)
+  expect(a.ui[0].options.signal.reason).toBe("cancelled")
+  expect(a.ctx.questions.respond(answer).error).toBe("unknown_request")
+  expect(a.events.filter(({ name }) => name === "ask-user:closed")).toHaveLength(1)
+})
+
 test("prelinked detached timeout delivers once through the rebound owner", async () => {
-  const r = runtime(fixture())
+  const r = runtime(fixture(), target)
   const a = owner(r, "a")
   const completion = r.startQuestion(a.pi, a.ctx, request(false), undefined, {}, "codex")
   const entry = r.getPendingQuestions("a")[0]
@@ -119,13 +137,18 @@ test("prelinked detached timeout delivers once through the rebound owner", async
   expect(b.messages).toHaveLength(1)
 })
 
-test("prelinked preparation revalidates byte-stable output and rejects mutations", () => {
+test("prelinked preparation preserves cache hardlinks, revalidates byte-stable output and rejects mutations", () => {
   const root = fixture()
+  const path = join(root, target)
+  const cache = join(root, "shared-cache")
+  const original = readFileSync(path, "utf8")
+  linkSync(path, cache)
   prepareQuestionControl(root)
-  const path = join(root, questionControlBundleTarget)
+  expect(readFileSync(cache, "utf8")).toBe(original)
   const first = readFileSync(path, "utf8")
   prepareQuestionControl(root)
   expect(readFileSync(path, "utf8")).toBe(first)
   writeFileSync(path, first.replace("get questions(){", "get renamedQuestions(){"))
   expect(() => prepareQuestionControl(root)).toThrow("question_control_incompatible")
+})
 })

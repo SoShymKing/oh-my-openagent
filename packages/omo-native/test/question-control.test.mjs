@@ -40,6 +40,7 @@ async function runtime(root = fixture()) {
     ? all : `from "${new URL(specifier, new URL("builtin/ask-user/tool.js", extensionBase)).href}"`)
   writeFileSync(toolPath, source)
   const builtin = await import(pathToFileURL(toolPath).href)
+  const { freshEscapeResidueRetry } = await import(new URL("builtin/ask-user/escape-residue.js", extensionBase).href)
   const runnerSource = readFileSync(join(root, "dist/core/extensions/runner.js"), "utf8")
   const method = runnerSource.slice(runnerSource.indexOf("    createContext("), runnerSource.indexOf("    /**\n     * Create the context for executing"))
   const createContext = new Function("createQuestionControl", `return ({${method}}).createContext`)(control.createQuestionControl)
@@ -80,7 +81,7 @@ async function runtime(root = fixture()) {
       getActiveTools: () => [],
       setActiveTools() {},
     }
-    const state = { timedOut: false, unavailable: false }
+    const state = { timedOut: false, unavailable: false, escapeResidue: freshEscapeResidueRetry() }
     sessions.push({ registry, id })
     return {
       ctx, pi, runner, state, events, entries, messages, notices, ui,

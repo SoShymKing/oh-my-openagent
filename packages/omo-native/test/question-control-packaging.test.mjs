@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { ensureEnginePrepared, ENGINE_PREPARED_STAMP, prepareInstalledEngine } from "../bin/lib/engine-prepare.js"
-import { planQuestionControl, questionControlBundleTarget, questionControlTargets, upstreamQuestionControlSource } from "../bin/lib/question-control.js"
+import { planQuestionControl, questionControlBundleTargets, questionControlTargets, upstreamQuestionControlSource } from "../bin/lib/question-control.js"
 import { engineEntry, writeQuestionFixture } from "./question-control.fixture.mjs"
 
 const roots = []
@@ -14,7 +14,7 @@ const patchScript = fileURLToPath(new URL("../bin/senpi-patch.mjs", import.meta.
 const rpc = "dist/modes/rpc/rpc-mode.js"
 const ua = "node_modules/@earendil-works/pi-ai/dist/api/anthropic-messages.js"
 const generated = ["dist/core/extensions/builtin/ask-user/question-control.js", "dist/core/extensions/builtin/ask-user/question-control.d.ts"]
-const observed = [...questionControlTargets, questionControlBundleTarget, ...generated, rpc, ua, "dist/bundle/ua-fixture.js", ENGINE_PREPARED_STAMP]
+const observed = [...questionControlTargets, ...questionControlBundleTargets, ...generated, rpc, ua, "dist/bundle/ua-fixture.js", ENGINE_PREPARED_STAMP]
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "omo-question-package-"))
   roots.push(root)
@@ -61,17 +61,20 @@ describe("shared question preparation", () => {
     expect(readFileSync(join(root, generated[0]), "utf8")).toBe("export {}\n")
   })
 
-  for (const defect of ["missing target", "missing bundle owner", "renamed binding", "renamed bundled binding", "partial preparation", "partial bundled preparation", "malformed prepared module"]) {
-    test(`postinstall rejects ${defect} before writing any engine file`, () => {
+  for (const [defect, target] of [
+    ...["missing target", "renamed binding", "partial preparation", "malformed prepared module"].map((defect) => [defect, questionControlTargets[0]]),
+    ...questionControlBundleTargets.flatMap((target) => ["missing bundle owner", "renamed bundled binding", "partial bundled preparation"].map((defect) => [defect, target])),
+  ]) {
+    test(`postinstall rejects ${defect} (${target}) before writing any engine file`, () => {
       const root = fixture()
       if (defect === "missing target") rmSync(join(root, questionControlTargets[0]))
-      if (defect === "missing bundle owner") rmSync(join(root, questionControlBundleTarget))
+      if (defect === "missing bundle owner") rmSync(join(root, target))
       if (defect === "renamed binding") {
         const path = join(root, questionControlTargets[0])
         writeFileSync(path, readFileSync(path, "utf8").replace("const accept =", "const renamedAccept ="))
       }
       if (defect === "renamed bundled binding") {
-        const path = join(root, questionControlBundleTarget)
+        const path = join(root, target)
         writeFileSync(path, readFileSync(path, "utf8").replace("function startQuestion(", "function renamedStartQuestion("))
       }
       if (defect === "partial preparation") {
@@ -80,8 +83,8 @@ describe("shared question preparation", () => {
       }
       if (defect === "partial bundled preparation") {
         prepareInstalledEngine(root)
-        const path = join(root, questionControlBundleTarget)
-        writeFileSync(path, upstreamQuestionControlSource(questionControlBundleTarget, readFileSync(path, "utf8")))
+        const path = join(root, target)
+        writeFileSync(path, upstreamQuestionControlSource(target, readFileSync(path, "utf8")))
       }
       if (defect === "malformed prepared module") {
         prepareInstalledEngine(root)

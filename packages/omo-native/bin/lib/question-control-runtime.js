@@ -23,7 +23,7 @@ export function createQuestionControl(sessionId) {
       if (!entry) return failure("unknown_request")
       let response
       if (input.cancelled === true) {
-        response = { status: "cancelled", answers: {}, unanswered: entry.request.questions.map(({ id }) => id) }
+        response = { status: "cancelled", cancelOrigin: "user", answers: {}, unanswered: entry.request.questions.map(({ id }) => id) }
       } else {
         if ((input.cancelled !== undefined && input.cancelled !== false)
           || (input.comment !== undefined && typeof input.comment !== "string") || !record(input.answers)) {
