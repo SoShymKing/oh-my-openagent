@@ -17,7 +17,8 @@ import type { OmoSenpiComponent } from "./types"
 type ExtensionSide = "brain" | "hand"
 
 interface LoadedExtension {
-  readonly handlers: Map<string, unknown[]>
+  readonly handlers: Map<string, object[]>
+  readonly handlerSides?: WeakMap<object, ExtensionSide>
   readonly tools: Map<string, { readonly definition: { readonly name: string; readonly parameters: unknown } }>
   readonly commands: Map<string, unknown>
   readonly flags: Map<string, unknown>
@@ -96,17 +97,23 @@ describe("omo-senpi composition on the hand side of a split session", () => {
     const hand = await loadFor(composeOmoSenpiExtension([deferringComponent]), "hand")
 
     // then
-    expect(hand.handlers.get("input") ?? []).toHaveLength(0)
+    const inputSides = (hand.handlers.get("input") ?? []).map((handler) => hand.handlerSides?.get(handler))
+    expect(inputSides.filter((side) => side !== undefined)).toEqual([])
+    expect(inputSides.filter((side) => side === undefined)).toEqual([undefined])
     expect(hand.handlers.get("before_agent_start") ?? []).toHaveLength(0)
   })
 
-  it("#given composition with deferred startup work #when the host loads it fused #then the first-paint edges are registered exactly as today", async () => {
+  it("#given composition with deferred startup work #when the host loads it fused #then first-paint edges target the brain and the general input observer stays untagged", async () => {
     // when
     const fused = await loadFor(composeOmoSenpiExtension([deferringComponent]), undefined)
 
     // then
-    expect(fused.handlers.get("input") ?? []).toHaveLength(1)
-    expect(fused.handlers.get("before_agent_start") ?? []).toHaveLength(1)
+    const inputSides = (fused.handlers.get("input") ?? []).map((handler) => fused.handlerSides?.get(handler))
+    expect(inputSides.filter((side) => side !== undefined)).toEqual(["brain"])
+    expect(inputSides.filter((side) => side === undefined)).toEqual([undefined])
+    expect(
+      (fused.handlers.get("before_agent_start") ?? []).map((handler) => fused.handlerSides?.get(handler)),
+    ).toEqual(["brain"])
   })
 
   it("#given a hand placement #when composition defers startup work #then the work runs on the next tick with no paint edge", async () => {
@@ -133,8 +140,12 @@ describe("omo-senpi composition on the hand side of a split session", () => {
     const brain = await loadFor(composeOmoSenpiExtension([deferringComponent]), "brain")
 
     // then
-    expect(brain.handlers.get("input") ?? []).toHaveLength(1)
-    expect(brain.handlers.get("before_agent_start") ?? []).toHaveLength(1)
+    const inputSides = (brain.handlers.get("input") ?? []).map((handler) => brain.handlerSides?.get(handler))
+    expect(inputSides.filter((side) => side !== undefined)).toEqual(["brain"])
+    expect(inputSides.filter((side) => side === undefined)).toEqual([undefined])
+    expect(
+      (brain.handlers.get("before_agent_start") ?? []).map((handler) => brain.handlerSides?.get(handler)),
+    ).toEqual(["brain"])
   })
 })
 

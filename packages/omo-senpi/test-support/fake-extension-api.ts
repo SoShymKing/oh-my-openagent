@@ -188,9 +188,9 @@ export class FakeExtensionAPI implements SenpiExtensionAPI {
   }
 }
 
-// Gives a fake every listed senpi seam it lacks as an inert stand-in, so a composed fake reports no absent seam and a test
-// that watches the logger sees only the warnings it is about.
-export function withInertSenpiSeams<T extends object>(pi: T): T {
+// Supplies the fake event bus and inert stand-ins for other missing seams, so logger tests see only their own warnings.
+export function withInertSenpiSeams<T extends FakeExtensionAPI>(pi: T): T {
+  if (pi.events === undefined) enableFakeExtensionEvents(pi)
   for (const path of absentSenpiSeams(pi)) {
     const keys = path.split(".")
     const last = keys.pop() ?? path
