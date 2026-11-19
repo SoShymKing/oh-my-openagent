@@ -22,6 +22,7 @@ describe("omo-senpi ultrawork packaged reload", () => {
     // observe each warmup's directory removal, and retain its spawn handle (#9766).
     const root = mkdtempSync(join(reloadRootParent(), "omo-ulw-reload-"))
     const hosts: ReloadHost[] = []
+    const executions: Promise<void>[] = []
     const sessions: FakeExtensionAPI[] = []
     const pinned = {
       TMPDIR: root,
@@ -43,7 +44,12 @@ describe("omo-senpi ultrawork packaged reload", () => {
       () =>
         cleanUpReloadRun({
           root,
-          shutdowns: sessions.map((pi) => () => pi.dispatch("session_shutdown", {})),
+          shutdowns: [
+            ...sessions.map((pi) => () => pi.dispatch("session_shutdown", { reason: "quit" })),
+            async () => {
+              for (const closed of executions) await closed
+            },
+          ],
           hosts,
           restore: () => {
             for (const restore of restores) restore()
@@ -52,6 +58,20 @@ describe("omo-senpi ultrawork packaged reload", () => {
       { timeout: RELOAD_CLEANUP_HOOK_TIMEOUT_MS },
     )
     Object.assign(process.env, pinned)
+    // Session-start sweeps use execFile, not spawn. Their PowerShell children inherit
+    // this root and can recreate it for policy probes until their close event.
+    const execFile = childProcess.execFile
+    const execFileSpy = spyOn(childProcess, "execFile")
+    restores.push(() => execFileSpy.mockRestore())
+    execFileSpy.mockImplementation(
+      new Proxy(execFile, {
+        apply(target, thisArg, args) {
+          const child: childProcess.ChildProcess = Reflect.apply(target, thisArg, args)
+          executions.push(new Promise<void>((resolve) => child.once("close", () => resolve())))
+          return child
+        },
+      }),
+    )
     // The warmups below are observed by their directory, which warmTaskHost creates under os.tmpdir(). If an earlier
     // file detached process.env, the pin never reaches os.tmpdir() and the wait would hang until the body timeout (#10846).
     expect(tmpdir()).toBe(root)
