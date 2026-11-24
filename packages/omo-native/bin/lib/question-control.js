@@ -5,24 +5,24 @@ import { join } from "node:path"
 const base = "dist/core/extensions/"
 const ask = `${base}builtin/ask-user/`
 const marker = "// omo question control"
-// These are the actual pinned 2026.11.18 sources, not invented engine fixtures.
+// These fingerprints are for the pinned Senpi 2026.11.23 package.
 // Fingerprints validate every binding (including unchanged finish/reload ownership) before any write.
 const originals = {
   [`${ask}tool.js`]: "e023b605df0d30ead81e9915e866daba03ecbc7284f8aa08db17f242e692f132",
   [`${ask}registry.js`]: "ecd096a968e01a1a5745ffd715af84fd13d4c7d00cf40100f66c57831bb008c7",
   [`${ask}registry.d.ts`]: "3d365792c1ae25c48da60dc8484db835a940bcfeeaef965cc0d70c2fe444cc00",
-  [`${base}runner.js`]: "322e0eae2ecb92018cf35d3a482df39f694506c8f91abc662144df525ad05592",
-  [`${base}types.d.ts`]: "030c9b90c6ae99a678c515e5f7ec226b800f731080c2041ad927642942e1c5c9",
+  [`${base}runner.js`]: "0b631b874c5141ce6de58c6f9a98240d291e07dcdedb0f8fc750b5d7aeac7303",
+  [`${base}types.d.ts`]: "e56fcab3d8ba4739f473dec50849d00b352be4846c5b9aea7111a64a04a1a121",
 }
 export const questionControlTargets = Object.keys(originals)
 const bundles = {
-  "dist/bundle/chunks/chunk-GOQNHWGQ.js": {
-    digest: "6ebe335345fe5cbab01e1780c82cebf7b48d11d000c4a48ff37786a6149b9dd9",
+  "dist/bundle/chunks/chunk-COYDUAEE.js": {
+    digest: "a558f15902a53adca6f42e239fb840e10aad2033a5232929079c466f5898a405",
     request: "request2", pi: "pi", cancel: "cancel3", abort: "abort", attach: "attach2", opts: "opts",
   },
   "dist/bundle/chunks/session-worker.js": {
-    digest: "5565141797f63711982378ea8314dbd52a1a3101ce88998a902423bc6bea331e",
-    request: "request3", pi: "pi2", cancel: "cancel4", abort: "abort3", attach: "attach4", opts: "opts2",
+    digest: "682c5ff44ce3aa3e895a6b2318cc68804334f8b3ed6654c2f8be702797b915dc",
+    request: "request3", pi: "pi2", cancel: "cancel4", abort: "abort3", attach: "attach5", opts: "opts2",
   },
 }
 export const questionControlBundleTargets = Object.keys(bundles)
